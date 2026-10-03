@@ -25,7 +25,7 @@ Connector 採三層 registry：
 | Mode                      | 適用情境                                                 | 現有範例                         |
 | ------------------------- | -------------------------------------------------------- | -------------------------------- |
 | `api_credentials`         | 帳密登入外部 API，可自行更新 token                       | 電子發票、中信、新光             |
-| `api_captcha_session`     | App API 登入含 CAPTCHA，challenge 僅短暫加密保存         | 王道、兆豐銀行                   |
+| `api_captcha_session`     | App API 登入含 CAPTCHA，challenge 僅短暫加密保存         | 王道、兆豐銀行、將來、匯豐       |
 | `api_device_otp`          | API 登入，首次裝置需要 OTP                               | 集保 e 存摺                      |
 | `browser_per_sync`        | 每次同步都必須以 Browser 登入與擷取                      | 國泰世華                         |
 | `browser_session`         | Browser 只負責登入，後續使用可復用的 HTTP session        | 玉山                             |
@@ -444,3 +444,33 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 ## 將來銀行
 
 使用網銀帳密，直接呼叫網銀內部 Web API 登入與查詢；圖形驗證碼支援 AI 自動辨識或人工輸入。單次登入、查詢後登出，不接管其他工作階段。主帳戶查詢最近三個月，活存口袋讀取所有分頁後依日期篩選；定存口袋同步餘額，基金與美股未接入。排程預設停用。設定 CAS 與原子寫入 guard 防止查詢期間變更帳密後仍寫入舊結果。
+
+### 匯豐銀行
+
+匯豐目前只接入信用卡，使用「信用卡網路服務」`card.hsbc.com.tw` 的網頁 BFF
+（`/ibk-bff/api/v1`），以信用卡網路服務的使用者代號與密碼登入，不使用網路銀行的數位保安編碼。
+端點與欄位語意取自 2026-10-03 官方網頁登入後的唯讀查詢，屬非公開的內部 API。
+
+- 登入依序呼叫 `POST /authentication`（確認使用者代號存在）、
+  `POST /captcha/request` 取得 `captchaKey` 與英數驗證碼圖片，再 `POST /authentication/login`。
+  帳號與密碼依網頁 bundle 以固定金鑰 AES-128-CBC 加密並附上隨機 IV；`lastKey` 為
+  `captchaKey`、`inputCode` 為驗證碼答案。回應的 `accessToken` 以 `Authorization` 傳送，
+  約 30 分鐘到期，網頁不續期，因此每次同步都重新登入，結束時登出，不保存 session。
+- 自動同步每次取新驗證碼交給 Workers AI，只有驗證碼錯誤才重試，最多三張；帳密錯誤立即停止。
+  無法辨識時丟出 `ManualCaptchaRequiredError`，前端改走人工驗證碼。人工流程把
+  `captchaKey`、該次 cookie 與兩分鐘期限加密保存在 `encrypted_config`，提交時先消耗。
+- 登入回應沒有 `accessToken` 時視為銀行要求額外驗證（bundle 內有登入 OTP 端點），標記
+  `needs_user_action`，排程與手動同步都不主動寄送 OTP。
+- 資料端點：`GET /cards`（卡片、`outstandingBalance`、繳款期限）、`GET /cards/{id}`
+  （`details` 的 `Credit Limit`、`Available Credit Limit`）、`GET /cards/{id}/view-statement`
+  （近 12 期帳單，取最近 3 期）、`GET /cards/{id}/transactions/posted`（已出帳，每頁固定 10 筆，
+  `pageNumber` 從 0 開始，整頁早於回溯起日即停止）與 `GET /cards/{id}/transactions/unposted`（未出帳）。
+- 交易 `isPositive: true` 為消費並存為負數，`false` 為繳款、退款或調整並存為正數；金額取
+  `ntdAmount`，外幣原幣金額保存於白名單 `raw`。未出帳清單中 `postedDate` 為 `0002-11-30`
+  的是尚未入帳的即時授權（`pending`），其餘為已入帳未出帳（`posted`）。
+- 交易 `sourceId` 由卡片帳戶、消費日、NFKC 正規化後的說明、帶正負號的台幣金額與外幣金額雜湊，
+  再加同組流水號；已出帳與未出帳清單同時出現同一筆時保留已出帳資料。
+- 餘額快照以 `outstandingBalance` 的負值表示欠款，帳單金額取 `curTotAmt`。帳單的已繳狀態目前
+  沒有可確認的欄位，維持未知；`outstandingBalance` 只在本期帳單已繳清的帳號確認過，
+  尚未以帳單未繳的情境驗證是否包含已出帳未繳金額。
+- 驗證碼長度 `HSBC_CAPTCHA_LENGTH` 與 `language` 參數值尚未以實際圖片與請求確認。

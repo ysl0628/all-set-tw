@@ -16,6 +16,7 @@ const CONNECTOR_BANK_CODES: Record<string, string> = {
   kgibank: "809",
   megabank: "017",
   rakuten: "826",
+  hsbc: "081",
 };
 
 export interface InstitutionAssetGroup {

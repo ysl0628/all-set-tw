@@ -17,6 +17,7 @@ import {
   MegabankProtocolError,
   MegabankVerificationRequiredError,
 } from "../../sources/megabank/mobile-api";
+import { HsbcApiError } from "../../sources/hsbc/api";
 import { zValidator } from "@hono/zod-validator";
 import { type Context, type Hono } from "hono";
 import { z } from "zod";
@@ -128,6 +129,13 @@ const obankSyncBodySchema = z.object({
 });
 
 const firstbankSyncBodySchema = z.object({
+  captcha: z
+    .string()
+    .regex(/^[A-Za-z0-9]{4,8}$/)
+    .optional(),
+});
+
+const hsbcSyncBodySchema = z.object({
   captcha: z
     .string()
     .regex(/^[A-Za-z0-9]{4,8}$/)
@@ -755,6 +763,49 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       );
     },
   );
+
+  api.post("/connectors/hsbc/captcha", async (c) => {
+    try {
+      return c.json(await prepareConnectorChallenge(c.env, "hsbc"));
+    } catch (error) {
+      if (error instanceof SyncAlreadyRunningError) {
+        return jsonError(
+          "SYNC_ALREADY_RUNNING",
+          "匯豐銀行已有驗證或同步作業正在進行。",
+          409,
+        );
+      }
+      if (error instanceof NeedsUserActionError) {
+        return jsonError("USER_ACTION_REQUIRED", error.message, 400);
+      }
+      if (error instanceof HsbcApiError) {
+        return jsonError(
+          "HSBC_CONNECTION_FAILED",
+          safeErrorMessage(error),
+          502,
+        );
+      }
+      return jsonError("HSBC_CAPTCHA_FAILED", safeErrorMessage(error), 502);
+    }
+  });
+
+  api.post(
+    "/connectors/hsbc/sync",
+    zValidator(
+      "json",
+      hsbcSyncBodySchema,
+      validationHook("INVALID_REQUEST", "匯豐銀行驗證碼格式不符。"),
+    ),
+    async (c) => {
+      const overrides = c.req.valid("json");
+      return syncRouteResponse(
+        c,
+        withManualSyncLock(c.env, "hsbc", SYNC_SCOPE_ALL, () =>
+          runConnectorSync(c.env, "hsbc", "manual", SYNC_SCOPE_ALL, overrides),
+        ),
+      );
+    },
+  );
 }
 
 async function queuedTdccSyncResponse(
@@ -975,6 +1026,9 @@ async function syncRouteResponse(
         safeErrorMessage(error),
         502,
       );
+    }
+    if (error instanceof HsbcApiError) {
+      return jsonError("HSBC_CONNECTION_FAILED", safeErrorMessage(error), 502);
     }
     return jsonError("SYNC_FAILED", safeErrorMessage(error), 500);
   }

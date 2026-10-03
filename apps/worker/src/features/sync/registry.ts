@@ -52,6 +52,11 @@ import {
   syncNextbank,
   prepareNextbankCaptchaSession,
 } from "../../sources/nextbank/sync";
+import {
+  prepareHsbcCaptchaSession,
+  syncHsbc,
+  type HsbcSyncOverrides,
+} from "../../sources/hsbc/sync";
 import { SYNC_SCOPE_ALL, type SyncOutcome, type SyncScope } from "./types";
 
 type ConnectorRuntimeDefinition = {
@@ -139,6 +144,11 @@ export const connectorRuntimeRegistry: Record<
     run: (env, trigger, _scope, overrides) =>
       syncMegabank(env, trigger, overrides as MegabankSyncOverrides),
     prepareChallenge: prepareMegabankCaptchaSession,
+  },
+  hsbc: {
+    run: (env, trigger, _scope, overrides) =>
+      syncHsbc(env, trigger, overrides as HsbcSyncOverrides),
+    prepareChallenge: prepareHsbcCaptchaSession,
   },
 };
 

@@ -10,6 +10,7 @@ import { ctbcConfigSchema } from "./ctbc/protocol";
 import { skbankConfigSchema } from "./skbank/protocol";
 import { obankConfigSchema } from "./obank/protocol";
 import { nextbankConfigSchema } from "./nextbank/protocol";
+import { hsbcConfigSchema } from "./hsbc/protocol";
 import { firstbankConfigSchema } from "./firstbank/protocol";
 import { hncbConfigSchema } from "./hncb/protocol";
 import { rakutenConfigSchema } from "./rakuten/protocol";
@@ -32,6 +33,7 @@ export const connectorConfigSchemas = {
   rakuten: rakutenConfigSchema,
   kgibank: kgibankConfigSchema,
   megabank: megabankConfigSchema,
+  hsbc: hsbcConfigSchema,
 } satisfies Record<ConnectorId, z.ZodTypeAny>;
 
 export function parseConnectorConfig(

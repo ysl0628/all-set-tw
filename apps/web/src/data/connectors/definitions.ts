@@ -94,4 +94,8 @@ export const connectorFields = {
     { key: "account", label: "使用者代號", type: "text" },
     { key: "password", label: "行動銀行登入密碼", type: "password" },
   ],
+  hsbc: [
+    { key: "account", label: "信用卡網路服務使用者代號", type: "text" },
+    { key: "password", label: "信用卡網路服務密碼", type: "password" },
+  ],
 } satisfies ConnectorFieldMap;

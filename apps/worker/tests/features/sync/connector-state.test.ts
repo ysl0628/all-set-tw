@@ -52,6 +52,33 @@ describe("connector state boundaries", () => {
     ).toBeNull();
   });
 
+  it("keeps HSBC CAPTCHA challenges out of the cursor and public config", () => {
+    expect(
+      splitConnectorCursorState(
+        "hsbc",
+        JSON.stringify({
+          captchaKey: "synthetic-key",
+          captchaCookies: "BFFSESSION=synthetic",
+          captchaExpiresAt: 1_790_000_000_000,
+          syncedAt: "2026-10-03T08:01:00.000Z",
+        }),
+      ),
+    ).toEqual({
+      safeCursor: JSON.stringify({ syncedAt: "2026-10-03T08:01:00.000Z" }),
+      secretState: {
+        captchaKey: "synthetic-key",
+        captchaCookies: "BFFSESSION=synthetic",
+        captchaExpiresAt: 1_790_000_000_000,
+      },
+    });
+    expect(
+      serializePublicConnectorConfig("hsbc", {
+        account: "demo-user",
+        captchaKey: "synthetic-key",
+      }),
+    ).toBeNull();
+  });
+
   it("keeps TDCC trade watermarks while encrypting device session state", () => {
     expect(
       splitConnectorCursorState(

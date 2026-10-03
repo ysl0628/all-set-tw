@@ -8,7 +8,8 @@ export function shouldEnableScheduleAfterFirstSync(
     (connectorId === "sinopac" ||
       connectorId === "taishin" ||
       connectorId === "obank" ||
-      connectorId === "megabank") &&
+      connectorId === "megabank" ||
+      connectorId === "hsbc") &&
     job?.enabled === false &&
     job.lastSuccessAt === null
   );

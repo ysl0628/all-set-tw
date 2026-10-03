@@ -390,6 +390,27 @@ export const connectorCatalog = {
       "deviceSeed",
     ],
   },
+  hsbc: {
+    id: "hsbc",
+    title: "匯豐銀行",
+    description: "信用卡帳單、已出帳、未出帳與即時消費",
+    connectionMode: "api_captcha_session",
+    scopes: ["all"],
+    capabilities: [
+      "bank_account",
+      "bank_balance_snapshot",
+      "bank_transaction",
+      "credit_card_bill",
+    ],
+    publicFields: [],
+    credentialFields: ["account", "password"],
+    secretStateFields: ["captchaKey", "captchaCookies", "captchaExpiresAt"],
+    resetOnCredentialChangeFields: [
+      "captchaKey",
+      "captchaCookies",
+      "captchaExpiresAt",
+    ],
+  },
 } as const satisfies Record<string, ConnectorCatalogEntry>;
 
 export type ConnectorId = keyof typeof connectorCatalog;
