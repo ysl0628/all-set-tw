@@ -24,8 +24,23 @@ export type HsbcErrorKind =
   | "transport"
   | "protocol";
 
+export type HsbcOperation =
+  | "identify_account"
+  | "request_captcha"
+  | "login"
+  | "logout"
+  | "list_cards"
+  | "card_detail"
+  | "statements"
+  | "unposted_transactions"
+  | "posted_transactions";
+
 export class HsbcApiError extends Error {
-  constructor(public readonly kind: HsbcErrorKind) {
+  constructor(
+    public readonly kind: HsbcErrorKind,
+    public readonly operation?: HsbcOperation,
+    public readonly status?: number,
+  ) {
     super(`匯豐信用卡 API：${kind}`);
     this.name = "HsbcApiError";
   }
@@ -75,15 +90,20 @@ export class HsbcApiClient {
 
   /** 先確認使用者代號存在，再取得一張新的圖形驗證碼。 */
   async prepareCaptcha(account: string): Promise<HsbcCaptcha> {
-    const exists = await this.request("POST", "/authentication", {
-      userId: account,
-    });
+    const exists = await this.request(
+      "POST",
+      "/authentication",
+      { userId: account },
+      { operation: "identify_account" },
+    );
     if (!isRecord(exists) || exists.exists !== true) {
       throw new HsbcApiError("credentials");
     }
     const data = await this.request(
       "POST",
       `/captcha/request?language=${encodeURIComponent(LANGUAGE)}`,
+      undefined,
+      { operation: "request_captcha" },
     );
     if (!isRecord(data)) throw new HsbcApiError("protocol");
     const key = nonempty(data.captchaKey);
@@ -122,7 +142,7 @@ export class HsbcApiClient {
         lastKey: captchaKey,
         inputCode: captcha,
       },
-      { login: true },
+      { login: true, operation: "login" },
     );
     if (
       !isRecord(data) ||
@@ -140,14 +160,16 @@ export class HsbcApiClient {
   async logout(): Promise<void> {
     if (!this.accessToken) return;
     try {
-      await this.request("POST", "/authentication/logout");
+      await this.request("POST", "/authentication/logout", undefined, {
+        operation: "logout",
+      });
     } finally {
       this.accessToken = undefined;
     }
   }
 
   async listCards(): Promise<JsonRecord[]> {
-    const data = await this.authorized("/cards");
+    const data = await this.authorized("/cards", "list_cards");
     if (!Array.isArray(data) || data.length > MAX_CARDS) {
       throw new HsbcApiError("protocol");
     }
@@ -158,18 +180,23 @@ export class HsbcApiClient {
   }
 
   async getCardDetail(cardId: string): Promise<unknown> {
-    return this.authorized(`/cards/${encodeURIComponent(cardId)}`);
+    return this.authorized(
+      `/cards/${encodeURIComponent(cardId)}`,
+      "card_detail",
+    );
   }
 
   async getStatements(cardId: string): Promise<unknown> {
     return this.authorized(
       `/cards/${encodeURIComponent(cardId)}/view-statement`,
+      "statements",
     );
   }
 
   async getUnpostedTransactions(cardId: string): Promise<unknown> {
     return this.authorized(
       `/cards/${encodeURIComponent(cardId)}/transactions/unposted`,
+      "unposted_transactions",
     );
   }
 
@@ -182,6 +209,7 @@ export class HsbcApiClient {
     }
     const data = await this.authorized(
       `/cards/${encodeURIComponent(cardId)}/transactions/posted?pageNumber=${pageNumber}`,
+      "posted_transactions",
     );
     if (!isRecord(data) || !Array.isArray(data.content)) {
       throw new HsbcApiError("protocol");
@@ -197,16 +225,21 @@ export class HsbcApiClient {
     };
   }
 
-  private async authorized(path: string): Promise<unknown> {
-    if (!this.accessToken) throw new HsbcApiError("session_expired");
-    return this.request("GET", path);
+  private async authorized(
+    path: string,
+    operation: HsbcOperation,
+  ): Promise<unknown> {
+    if (!this.accessToken) {
+      throw new HsbcApiError("session_expired", operation);
+    }
+    return this.request("GET", path, undefined, { operation });
   }
 
   private async request(
     method: "GET" | "POST",
     path: string,
-    body?: JsonRecord,
-    options: { login?: boolean } = {},
+    body: JsonRecord | undefined,
+    options: { login?: boolean; operation: HsbcOperation },
   ): Promise<unknown> {
     const headers: Record<string, string> = {
       Accept: "application/json, text/plain, */*",
@@ -231,27 +264,41 @@ export class HsbcApiClient {
       });
     } catch {
       // Never propagate request bodies, bank messages, cookies or tokens.
-      throw new HsbcApiError("transport");
+      throw new HsbcApiError("transport", options.operation);
     }
     this.storeCookies(response);
-    if (response.status === 429) throw new HsbcApiError("rate_limit");
+    if (response.status === 429) {
+      throw new HsbcApiError("rate_limit", options.operation, response.status);
+    }
     if (response.status === 401 || response.status === 403) {
-      throw new HsbcApiError(options.login ? "credentials" : "session_expired");
+      throw new HsbcApiError(
+        options.login ? "credentials" : "session_expired",
+        options.operation,
+        response.status,
+      );
     }
     let envelope: unknown;
     try {
       envelope = await response.json();
     } catch {
-      throw new HsbcApiError(response.ok ? "protocol" : "transport");
+      throw new HsbcApiError(
+        response.ok ? "protocol" : "transport",
+        options.operation,
+        response.status,
+      );
     }
-    if (!isRecord(envelope)) throw new HsbcApiError("protocol");
+    if (!isRecord(envelope)) {
+      throw new HsbcApiError("protocol", options.operation, response.status);
+    }
     if (envelope.success === true) return envelope.payload;
     if (envelope.success === false || !response.ok) {
       throw new HsbcApiError(
         options.login ? loginErrorKind(envelope.error) : "protocol",
+        options.operation,
+        response.status,
       );
     }
-    throw new HsbcApiError("protocol");
+    throw new HsbcApiError("protocol", options.operation, response.status);
   }
 
   private storeCookies(response: Response) {

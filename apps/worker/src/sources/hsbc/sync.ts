@@ -38,8 +38,8 @@ import {
 } from "./api";
 import { hsbcConfigSchema, parseHsbcCards } from "./protocol";
 
-/** 匯豐登入頁的英數圖形驗證碼長度；尚未以實際圖片確認，確認後調整這個常數。 */
-export const HSBC_CAPTCHA_LENGTH = 6;
+/** 匯豐信用卡網頁登入頁的英數圖形驗證碼長度。 */
+export const HSBC_CAPTCHA_LENGTH = 5;
 const AUTO_CAPTCHA_ATTEMPTS = 3;
 const CONNECTOR_ID = "hsbc";
 
@@ -268,6 +268,15 @@ async function loginWithRecognizedCaptcha(
 
 function userFacingError(error: unknown, manualCaptcha = false): unknown {
   if (!(error instanceof HsbcApiError)) return error;
+  console.warn(
+    JSON.stringify({
+      event: "hsbc_api_error",
+      kind: error.kind,
+      ...(error.operation ? { operation: error.operation } : {}),
+      ...(error.status !== undefined ? { status: error.status } : {}),
+      manualCaptcha,
+    }),
+  );
   switch (error.kind) {
     case "captcha":
       return manualCaptcha

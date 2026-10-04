@@ -477,4 +477,7 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 - 餘額快照以 `outstandingBalance` 的負值表示欠款，帳單金額取 `curTotAmt`。帳單的已繳狀態目前
   沒有可確認的欄位，維持未知；`outstandingBalance` 只在本期帳單已繳清的帳號確認過，
   尚未以帳單未繳的情境驗證是否包含已出帳未繳金額。
-- 驗證碼長度 `HSBC_CAPTCHA_LENGTH` 與 `language` 參數值尚未以實際圖片與請求確認。
+- 實際網頁登入畫面的驗證碼為 5 碼英數字，因此 `HSBC_CAPTCHA_LENGTH` 設為 5；
+  `language` 參數值仍尚未以瀏覽器請求確認。
+- 外部 API 失敗時只記錄 `hsbc_api_error` 的操作名稱、錯誤類型與 HTTP status；
+  不記錄 endpoint 中的卡片識別值、銀行回應、帳密、Cookie 或 Token。

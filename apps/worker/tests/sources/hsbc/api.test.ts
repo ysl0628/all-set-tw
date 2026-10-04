@@ -233,7 +233,34 @@ describe("匯豐信用卡 API client", () => {
     });
     await expect(client.listCards()).rejects.toMatchObject({
       kind: "session_expired",
+      operation: "list_cards",
+      status: 401,
     });
+  });
+
+  it("授權錯誤只保留安全的操作名稱與狀態碼", async () => {
+    const sensitiveCardId = "card-secret-identifier";
+    const { fetcher } = fakeBank((path) =>
+      path === `/cards/${sensitiveCardId}`
+        ? new Response("", { status: 403 })
+        : undefined,
+    );
+    const client = new HsbcApiClient({ fetcher });
+    await client.login({
+      account: "u",
+      password: "p",
+      captchaKey: "k",
+      captcha: "Ab12Cd",
+    });
+    const error = await client
+      .getCardDetail(sensitiveCardId)
+      .catch((value: unknown) => value);
+    expect(error).toMatchObject({
+      kind: "session_expired",
+      operation: "card_detail",
+      status: 403,
+    });
+    expect(String(error)).not.toContain(sensitiveCardId);
   });
 
   it("已出帳交易翻到早於回溯起日的頁面就停止，未出帳與帳單一併取得", async () => {
