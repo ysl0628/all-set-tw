@@ -10,6 +10,7 @@ const KGIBANK_BANK_CODE = "809";
 const RAKUTEN_BANK_CODE = "826";
 const FIRSTBANK_BANK_CODE = "007";
 const MEGABANK_BANK_CODE = "017";
+const TAISHIN_BANK_CODE = "812";
 const TAIWAN_BANK_NAMES: Record<string, string> = {
   "004": "台灣銀行",
   "005": "土地銀行",
@@ -104,6 +105,13 @@ export function deriveBankMatchKey(
   if (connectorId === "rakuten" && sourceId.startsWith("bank:rakuten:")) {
     const last4 = sourceId.split(":")[2]?.replace(/\D/g, "").slice(-4) ?? "";
     return { bankCode: RAKUTEN_BANK_CODE, last4: last4 || null };
+  }
+  if (connectorId === "richart" && /^bank:richart:\d{4}:/.test(sourceId)) {
+    // Richart 為台新銀行數位帳戶；罐子與定存彙總帳戶沒有可配對的帳號末四碼。
+    return {
+      bankCode: TAISHIN_BANK_CODE,
+      last4: sourceId.split(":")[2] ?? null,
+    };
   }
   const match = sourceId.match(/^settlement:([^:]+):([^:]+)/);
   const last4 = match?.[2]?.replace(/\D/g, "").slice(-4) ?? "";

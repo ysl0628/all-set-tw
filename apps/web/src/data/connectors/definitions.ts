@@ -98,4 +98,9 @@ export const connectorFields = {
     { key: "account", label: "信用卡網路服務使用者代號", type: "text" },
     { key: "password", label: "信用卡網路服務密碼", type: "password" },
   ],
+  richart: [
+    { key: "userId", label: "身分證字號", type: "text" },
+    { key: "account", label: "Richart 使用者代號", type: "text" },
+    { key: "password", label: "Richart 使用者密碼", type: "password" },
+  ],
 } satisfies ConnectorFieldMap;

@@ -57,6 +57,11 @@ import {
   syncHsbc,
   type HsbcSyncOverrides,
 } from "../../sources/hsbc/sync";
+import {
+  prepareRichartCaptchaSession,
+  syncRichart,
+  type RichartSyncOverrides,
+} from "../../sources/richart/sync";
 import { SYNC_SCOPE_ALL, type SyncOutcome, type SyncScope } from "./types";
 
 type ConnectorRuntimeDefinition = {
@@ -149,6 +154,11 @@ export const connectorRuntimeRegistry: Record<
     run: (env, trigger, _scope, overrides) =>
       syncHsbc(env, trigger, overrides as HsbcSyncOverrides),
     prepareChallenge: prepareHsbcCaptchaSession,
+  },
+  richart: {
+    run: (env, trigger, _scope, overrides) =>
+      syncRichart(env, trigger, overrides as RichartSyncOverrides),
+    prepareChallenge: prepareRichartCaptchaSession,
   },
 };
 

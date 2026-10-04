@@ -120,7 +120,8 @@
       connectorId === "rakuten" ||
       connectorId === "kgibank" ||
       connectorId === "megabank" ||
-      connectorId === "hsbc",
+      connectorId === "hsbc" ||
+      connectorId === "richart",
   );
   const browserBankSessionAvailable = $derived(
     browserBank && Boolean($settings.data?.sessionAvailable),
@@ -1179,7 +1180,9 @@
                       ? "樂天"
                       : connectorId === "hsbc"
                         ? "匯豐"
-                        : "永豐"}
+                        : connectorId === "richart"
+                          ? "Richart"
+                          : "永豐"}
       bind:captcha={bankCaptcha}
       captchaImage={bankCaptchaImage}
       digitCount={bankCaptchaDigitCount}
@@ -1752,6 +1755,8 @@
                       ? "樂天網銀驗證碼會先以 Workers AI 自動辨識，失敗時改由人工輸入；每次同步都重新登入，結束時登出，不保留 session。"
                       : connectorId === "hsbc"
                         ? "匯豐同步使用信用卡網路服務（card.hsbc.com.tw）的 API，以帳密登入並由 Workers AI 辨識英數驗證碼，失敗時改由人工輸入；每次同步都重新登入，結束時登出。"
-                        : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}
+                        : connectorId === "richart"
+                          ? "Richart 同步直接使用網銀 API，以身分證字號與帳密登入並由 Workers AI 辨識 4 位數字檢核碼，失敗時改由人工輸入；每次同步都重新登入，結束時登出。"
+                          : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}
   </p>
 </Card>
