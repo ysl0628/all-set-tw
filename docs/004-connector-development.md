@@ -480,5 +480,6 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
   尚未以帳單未繳的情境驗證是否包含已出帳未繳金額。
 - 實際網頁登入畫面的驗證碼為 5 碼英數字，因此 `HSBC_CAPTCHA_LENGTH` 設為 5；
   `language` 參數值仍尚未以瀏覽器請求確認。
-- 外部 API 失敗時只記錄 `hsbc_api_error` 的操作名稱、錯誤類型與 HTTP status；
+- 外部 API 失敗時只記錄 `hsbc_api_error` 的操作名稱、錯誤類型、HTTP status 與符合
+  `[A-Za-z0-9_.-]` 白名單的短銀行錯誤代碼；
   不記錄 endpoint 中的卡片識別值、銀行回應、帳密、Cookie 或 Token。

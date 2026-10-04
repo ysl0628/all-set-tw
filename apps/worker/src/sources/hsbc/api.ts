@@ -40,6 +40,7 @@ export class HsbcApiError extends Error {
     public readonly kind: HsbcErrorKind,
     public readonly operation?: HsbcOperation,
     public readonly status?: number,
+    public readonly bankCode?: string,
   ) {
     super(`匯豐信用卡 API：${kind}`);
     this.name = "HsbcApiError";
@@ -296,6 +297,7 @@ export class HsbcApiClient {
         options.login ? loginErrorKind(envelope.error) : "protocol",
         options.operation,
         response.status,
+        safeBankErrorCode(envelope.error),
       );
     }
     throw new HsbcApiError("protocol", options.operation, response.status);
@@ -373,6 +375,25 @@ function loginErrorKind(error: unknown): HsbcErrorKind {
     return "credentials";
   }
   return "protocol";
+}
+
+/** 只保留不含空白與個資的短錯誤代碼，絕不記錄銀行回應文字。 */
+function safeBankErrorCode(error: unknown): string | undefined {
+  const records = [
+    error,
+    isRecord(error) ? error.error : undefined,
+    isRecord(error) ? error.details : undefined,
+  ];
+  for (const candidate of records) {
+    if (!isRecord(candidate)) continue;
+    for (const key of ["code", "errorCode", "statusCode"]) {
+      const value = candidate[key];
+      const normalized =
+        typeof value === "number" ? String(value) : String(value ?? "").trim();
+      if (/^[A-Za-z0-9_.-]{1,64}$/.test(normalized)) return normalized;
+    }
+  }
+  return undefined;
 }
 
 async function encryptLoginField(value: string, iv: Uint8Array<ArrayBuffer>) {

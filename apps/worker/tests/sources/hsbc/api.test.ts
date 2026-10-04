@@ -208,6 +208,38 @@ describe("匯豐信用卡 API client", () => {
     }
   });
 
+  it("只保留安全的銀行錯誤代碼，不帶入錯誤內容", async () => {
+    const { fetcher } = fakeBank((path) =>
+      path === "/authentication/login"
+        ? json(
+            {
+              success: false,
+              error: {
+                errorCode: "LOGIN_5007",
+                message: "unclassified private bank response",
+              },
+            },
+            { status: 500 },
+          )
+        : undefined,
+    );
+    const error = await new HsbcApiClient({ fetcher })
+      .login({
+        account: "demo-user",
+        password: "secret-pass",
+        captchaKey: "key",
+        captcha: "Ab12C",
+      })
+      .catch((value: unknown) => value);
+    expect(error).toMatchObject({
+      kind: "protocol",
+      operation: "login",
+      status: 500,
+      bankCode: "LOGIN_5007",
+    });
+    expect(JSON.stringify(error)).not.toContain("private bank response");
+  });
+
   it("使用者代號不存在時不取驗證碼", async () => {
     const { calls, fetcher } = fakeBank((path) =>
       path === "/authentication"

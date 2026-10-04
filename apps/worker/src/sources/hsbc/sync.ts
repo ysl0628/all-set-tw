@@ -297,6 +297,7 @@ function userFacingError(error: unknown, manualCaptcha = false): unknown {
       kind: error.kind,
       ...(error.operation ? { operation: error.operation } : {}),
       ...(error.status !== undefined ? { status: error.status } : {}),
+      ...(error.bankCode ? { bankCode: error.bankCode } : {}),
       manualCaptcha,
     }),
   );
