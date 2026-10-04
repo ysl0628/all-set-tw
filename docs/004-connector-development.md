@@ -455,14 +455,15 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 （`/ibk-bff/api/v1`），以信用卡網路服務的使用者代號與密碼登入，不使用網路銀行的數位保安編碼。
 端點與欄位語意取自 2026-10-03 官方網頁登入後的唯讀查詢，屬非公開的內部 API。
 
-- 登入依序呼叫 `POST /authentication`（確認使用者代號存在）、
+- 匯豐前方的 Imperva 防護會拒絕 Worker 直接 `fetch`，因此登入與資料 API 都在
+  Cloudflare Browser Rendering 的同源頁面內呼叫。登入依序呼叫 `POST /authentication`（確認使用者代號存在）、
   `POST /captcha/request` 取得 `captchaKey` 與英數驗證碼圖片，再 `POST /authentication/login`。
   帳號與密碼依網頁 bundle 以固定金鑰 AES-128-CBC 加密並附上隨機 IV；`lastKey` 為
   `captchaKey`、`inputCode` 為驗證碼答案。回應的 `accessToken` 以 `Authorization` 傳送，
   約 30 分鐘到期，網頁不續期，因此每次同步都重新登入，結束時登出，不保存 session。
 - 自動同步每次取新驗證碼交給 Workers AI，只有驗證碼錯誤才重試，最多三張；帳密錯誤立即停止。
   無法辨識時丟出 `ManualCaptchaRequiredError`，前端改走人工驗證碼。人工流程把
-  `captchaKey`、該次 cookie 與兩分鐘期限加密保存在 `encrypted_config`，提交時先消耗。
+  `captchaKey`、Browser Rendering session ID 與兩分鐘期限加密保存在 `encrypted_config`，提交時先消耗。
 - 登入回應沒有 `accessToken` 時視為銀行要求額外驗證（bundle 內有登入 OTP 端點），標記
   `needs_user_action`，排程與手動同步都不主動寄送 OTP。
 - 資料端點：`GET /cards`（卡片、`outstandingBalance`、繳款期限）、`GET /cards/{id}`

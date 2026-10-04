@@ -36,6 +36,11 @@ import {
   HsbcApiError,
   collectHsbcCardPayloads,
 } from "./api";
+import {
+  closeHsbcBrowser,
+  launchHsbcBrowser,
+  reconnectHsbcBrowser,
+} from "./browser";
 import { hsbcConfigSchema, parseHsbcCards } from "./protocol";
 
 /** 匯豐信用卡網頁登入頁的英數圖形驗證碼長度。 */
@@ -49,6 +54,7 @@ function hsbcCleanConfig(stored: Record<string, unknown>) {
   const cleaned = { ...stored };
   delete cleaned.captchaKey;
   delete cleaned.captchaCookies;
+  delete cleaned.browserSessionId;
   delete cleaned.captchaExpiresAt;
   return cleaned;
 }
@@ -86,33 +92,40 @@ export async function prepareHsbcCaptchaSession(env: Env) {
       cleared,
       clearedAt,
     );
-    let challenge;
+    const context = await launchHsbcBrowser(env.BROWSER);
+    let preserved = false;
     try {
-      challenge = await new HsbcApiClient().prepareCaptcha(config.account);
+      const challenge = await new HsbcApiClient({
+        fetcher: context.fetcher,
+      }).prepareCaptcha(config.account);
+      await compareAndSetConnectorSecret(
+        env.DB,
+        CONNECTOR_ID,
+        { encrypted_config: cleared, updated_at: clearedAt },
+        await encryptJson(
+          {
+            ...hsbcCleanConfig(stored),
+            captchaKey: challenge.key,
+            browserSessionId: context.browser.sessionId(),
+            captchaExpiresAt: challenge.expiresAt,
+          },
+          configEncryptionKey(env),
+        ),
+        new Date().toISOString(),
+      );
+      await context.browser.disconnect();
+      preserved = true;
+      return {
+        captchaImage: challenge.dataUri,
+        expiresAt: new Date(challenge.expiresAt).toISOString(),
+        captchaLength: HSBC_CAPTCHA_LENGTH,
+        captchaKind: "alphanumeric" as const,
+      };
     } catch (error) {
       throw userFacingError(error);
+    } finally {
+      if (!preserved) await closeHsbcBrowser(context.browser);
     }
-    await compareAndSetConnectorSecret(
-      env.DB,
-      CONNECTOR_ID,
-      { encrypted_config: cleared, updated_at: clearedAt },
-      await encryptJson(
-        {
-          ...hsbcCleanConfig(stored),
-          captchaKey: challenge.key,
-          captchaCookies: challenge.cookies,
-          captchaExpiresAt: challenge.expiresAt,
-        },
-        configEncryptionKey(env),
-      ),
-      new Date().toISOString(),
-    );
-    return {
-      captchaImage: challenge.dataUri,
-      expiresAt: new Date(challenge.expiresAt).toISOString(),
-      captchaLength: HSBC_CAPTCHA_LENGTH,
-      captchaKind: "alphanumeric" as const,
-    };
   } finally {
     await releaseSyncJobLock(env.DB, lockRowId, runId);
   }
@@ -146,7 +159,17 @@ export async function syncHsbc(
     version,
   );
 
-  const client = new HsbcApiClient();
+  const context = overrides.captcha
+    ? config.browserSessionId
+      ? await reconnectHsbcBrowser(env.BROWSER, config.browserSessionId)
+      : undefined
+    : await launchHsbcBrowser(env.BROWSER);
+  if (!context) {
+    throw new NeedsUserActionError(
+      "匯豐驗證碼工作階段已逾時，請重新取得驗證碼。",
+    );
+  }
+  const client = new HsbcApiClient({ fetcher: context.fetcher });
   let payloads: Awaited<ReturnType<typeof collectHsbcCardPayloads>>;
   try {
     if (overrides.captcha) {
@@ -158,7 +181,6 @@ export async function syncHsbc(
       ) {
         throw new NeedsUserActionError("匯豐驗證碼已過期，請重新取得驗證碼。");
       }
-      client.restoreCookies(config.captchaCookies);
       await client.login({
         account: config.account,
         password: config.password,
@@ -180,6 +202,7 @@ export async function syncHsbc(
     } catch {
       console.warn("[sync] hsbc: logout unconfirmed");
     }
+    await closeHsbcBrowser(context.browser);
   }
 
   const result = parseHsbcCards(payloads);

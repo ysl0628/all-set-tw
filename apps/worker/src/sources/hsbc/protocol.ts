@@ -7,12 +7,12 @@ import type {
 import { z } from "zod";
 import { BANK_SYNC_MONTHS } from "../sync-window";
 
-/** 匯豐信用卡網路服務登入後只需要使用者代號與密碼；待提交的驗證碼僅短暫加密保存。 */
+/** 匯豐信用卡網路服務登入後只需要使用者代號與密碼；待提交的瀏覽器工作階段僅短暫加密保存。 */
 export const hsbcConfigSchema = z.object({
   account: z.string().min(1).optional(),
   password: z.string().min(1).optional(),
   captchaKey: z.string().min(1).optional(),
-  captchaCookies: z.string().optional(),
+  browserSessionId: z.string().max(256).optional(),
   captchaExpiresAt: z.number().int().optional(),
 });
 export type HsbcConfig = z.infer<typeof hsbcConfigSchema>;
