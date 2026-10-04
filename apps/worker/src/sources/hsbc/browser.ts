@@ -77,10 +77,6 @@ async function initializeContext(
     waitUntil: "domcontentloaded",
     timeout: NAVIGATION_TIMEOUT_MS,
   });
-  await page.waitForFunction(
-    () => (document.querySelector("#root")?.childElementCount ?? 0) > 0,
-    { timeout: NAVIGATION_TIMEOUT_MS },
-  );
   return {
     browser,
     page,
