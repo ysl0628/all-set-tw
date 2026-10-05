@@ -39,7 +39,8 @@ INSERT INTO classification_categories
   ('software',      '軟體服務', 14, 1, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'),
   ('utilities',     '生活繳費', 15, 1, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'),
   ('other-income',  '其他收入', 16, 1, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'),
-  ('other',         '未分類', 17, 1, '2026-06-22T00:00:00.000Z', '2026-09-06T00:00:00.000Z');
+  ('card-payment',  '信用卡繳費', 17, 1, '2026-10-05T00:00:00.000Z', '2026-10-05T00:00:00.000Z'),
+  ('other',         '未分類', 18, 1, '2026-06-22T00:00:00.000Z', '2026-10-05T00:00:00.000Z');
 
 INSERT INTO classification_rules
   (id, category_id, target_type, field, operator, pattern, priority, enabled, is_system, source, description, created_at, updated_at) VALUES
@@ -51,7 +52,7 @@ INSERT INTO classification_rules
   ('system:shared:fee-keywords',       'fee',        NULL,               'any_text', 'regex', '手續|管理費|利息|fee|charge|interest',                                         90, 1, 1, 'system', '手續費相關關鍵字', '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
   ('system:bank:shopping-keywords',    'shopping',   'bank_transaction', 'any_text', 'regex', '購物|商店|百貨|超商|market|store|shop|momo|pchome|costco|全聯|統一|seven|family', 90, 1, 1, 'system', '購物相關關鍵字', '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
   ('system:shared:insurance-keywords', 'insurance',  NULL,               'any_text', 'regex', '健保|勞保|保費|保險|insurance',                                                95, 1, 1, 'system', '保險相關關鍵字',   '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:bank:creditcard-payment',   'transfer',   'bank_transaction', 'any_text', 'regex', '信用卡.*繳|繳卡費|credit.?card.*(pay|bill|repay)',                            106, 1, 1, 'system', '信用卡繳費',       '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
+  ('system:bank:creditcard-payment',   'card-payment', 'bank_transaction', 'any_text', 'regex', '信用卡.*(繳|扣款|還款|自扣)|卡費|繳卡款|繳款入帳|自扣已入帳|credit.?card.*(pay|bill|repay)|card payment|payment received',                            106, 1, 1, 'system', '信用卡繳費',       '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
   ('demo:user:rent',                   'housing',    'bank_transaction', 'any_text', 'contains', '房租',                                                                      200, 1, 0, 'demo',   'Demo 自訂房租分類', '2026-06-24T09:00:00.000Z', '2026-06-24T09:00:00.000Z');
 
 INSERT OR IGNORE INTO classification_rules

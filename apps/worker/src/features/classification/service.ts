@@ -20,6 +20,9 @@ export type ClassifiedTransaction = {
   amount?: number;
 };
 
+/** 繳信用卡費只是負債移轉，無論由規則或手動歸入此分類都排除統計。 */
+export const CARD_PAYMENT_CATEGORY_ID = "card-payment";
+
 export function matchesClassificationRule(
   rule: { field: string; operator: string; pattern: string },
   transaction: ClassifiedTransaction,
@@ -89,6 +92,8 @@ export async function resolveClassifications(
         categoryId: override.category_id,
         label: override.label,
         source: "override",
+        excludedFromCalculation:
+          override.category_id === CARD_PAYMENT_CATEGORY_ID || undefined,
       });
       continue;
     }
@@ -111,7 +116,9 @@ export async function resolveClassifications(
         label: rule.label,
         source: rule.is_system ? "system_rule" : "user_rule",
         ruleId: rule.id,
-        excludedFromCalculation: rule.excluded_from_calculation === 1,
+        excludedFromCalculation:
+          rule.excluded_from_calculation === 1 ||
+          rule.category_id === CARD_PAYMENT_CATEGORY_ID,
       };
       break;
     }
