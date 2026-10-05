@@ -256,6 +256,8 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 
 登入公告清單的按鈕依序顯示「下一則」，最後一則才是「我知道了」。同步逐則點選已知動作，僅在最後確認彈窗關閉；未知動作不點擊，最多處理二十則，避免公告循環或誤觸其他功能。此流程沿用既有登入入口，不變更 OTP、信任裝置或資料查詢。
 
+登入頁的 `NormalDataCheck()` 仍依賴全域 jQuery `$`。Browser Rendering 在送出前必須確認 `$` 已可用；若銀行頁宣告的 jQuery 載入失敗，只能重新載入該頁同源 script 並補上 `jQuery` 的 `$` alias，不得注入第三方 CDN。仍無法初始化時停止登入，避免把載入問題誤判成帳密錯誤。
+
 信用卡總覽偵測不到卡號時，必須有明確無卡提示，或具備信用卡總覽與「立即線上辦卡」的無卡頁面內容，才回傳空的信用卡資料。空白、維護或無法辨識的頁面使同步失敗，不能僅因缺少卡號就當成無卡。
 
 ### 永豐銀行
@@ -459,7 +461,8 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
   Cloudflare Browser Rendering 的同源頁面內呼叫。登入依序呼叫 `POST /authentication`（確認使用者代號存在）、
   `POST /captcha/request` 取得 `captchaKey` 與英數驗證碼圖片，再 `POST /authentication/login`。
   帳號與密碼依網頁 bundle 以固定金鑰 AES-128-CBC 加密並附上隨機 IV；`lastKey` 為
-  `captchaKey`、`inputCode` 為驗證碼答案。回應的 `accessToken` 以 `Authorization` 傳送，
+  `captchaKey`、`inputCode` 為驗證碼答案，語言列舉值使用官方 bundle 的 `zh_tw`。回應的
+  `accessToken` 以 `Authorization` 傳送，並依官方流程呼叫 `GET /session` 建立登入 session，
   約 30 分鐘到期，網頁不續期，因此每次同步都重新登入，結束時登出，不保存 session。
 - 自動同步每次取新驗證碼交給 Workers AI，只有驗證碼錯誤才重試，最多三張；帳密錯誤立即停止。
   無法辨識時丟出 `ManualCaptchaRequiredError`，前端改走人工驗證碼。人工流程把
@@ -478,8 +481,7 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 - 餘額快照以 `outstandingBalance` 的負值表示欠款，帳單金額取 `curTotAmt`。帳單的已繳狀態目前
   沒有可確認的欄位，維持未知；`outstandingBalance` 只在本期帳單已繳清的帳號確認過，
   尚未以帳單未繳的情境驗證是否包含已出帳未繳金額。
-- 實際網頁登入畫面的驗證碼為 5 碼英數字，因此 `HSBC_CAPTCHA_LENGTH` 設為 5；
-  `language` 參數值仍尚未以瀏覽器請求確認。
+- 實際網頁登入畫面的驗證碼為 5 碼英數字，因此 `HSBC_CAPTCHA_LENGTH` 設為 5。
 - 外部 API 失敗時只記錄 `hsbc_api_error` 的操作名稱、錯誤類型、HTTP status 與符合
   `[A-Za-z0-9_.-]` 白名單的短銀行錯誤代碼；
   不記錄 endpoint 中的卡片識別值、銀行回應、帳密、Cookie 或 Token。

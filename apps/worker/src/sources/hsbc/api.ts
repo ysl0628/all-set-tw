@@ -8,7 +8,7 @@ const BASE = "/ibk-bff/api/v1";
 // The web client encrypts credentials with this fixed AES-128-CBC key before
 // posting them over TLS; it is part of the public bundle, not a secret.
 const LOGIN_AES_KEY = "0123456789abcdef";
-const LANGUAGE = "zh-TW";
+const LANGUAGE = "zh_tw";
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 export const HSBC_CAPTCHA_TTL_MS = 2 * 60_000;
@@ -28,6 +28,7 @@ export type HsbcOperation =
   | "identify_account"
   | "request_captcha"
   | "login"
+  | "initialize_session"
   | "logout"
   | "list_cards"
   | "card_detail"
@@ -156,6 +157,9 @@ export class HsbcApiClient {
     this.accessToken = data.accessToken.startsWith("Bearer ")
       ? data.accessToken
       : `Bearer ${data.accessToken}`;
+    await this.request("GET", "/session", undefined, {
+      operation: "initialize_session",
+    });
   }
 
   async logout(): Promise<void> {

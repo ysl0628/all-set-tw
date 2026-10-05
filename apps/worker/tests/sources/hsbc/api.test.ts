@@ -61,6 +61,12 @@ function fakeBank(
         payload: { accessToken: "jwt-token" },
         error: null,
       });
+    if (path === "/session")
+      return json({
+        success: true,
+        payload: { sessionId: "session-id" },
+        error: null,
+      });
     if (path === "/authentication/logout")
       return json({ success: true, payload: {}, error: null });
     if (path === "/cards")
@@ -136,6 +142,7 @@ describe("匯豐信用卡 API client", () => {
       lastKey: "k".repeat(32),
       inputCode: "Ab12Cd",
       pushToken: "",
+      language: "zh_tw",
     });
     expect(String(login.init.body)).not.toContain("secret-pass");
     expect(await decryptField(body.username!, body.iv!)).toBe("demo-user");
@@ -143,6 +150,19 @@ describe("匯豐信用卡 API client", () => {
     expect(new Headers(login.init.headers).get("Cookie")).toBe(
       "BFFSESSION=abc123",
     );
+
+    const captchaRequest = calls.find((call) =>
+      call.url.includes("/captcha/request?"),
+    )!;
+    expect(new URL(captchaRequest.url).searchParams.get("language")).toBe(
+      "zh_tw",
+    );
+
+    const session = calls.find((call) => call.url.endsWith("/session"))!;
+    expect(new Headers(session.init.headers).get("Authorization")).toBe(
+      "Bearer jwt-token",
+    );
+    expect(calls.indexOf(session)).toBeGreaterThan(calls.indexOf(login));
 
     await client.listCards();
     const cards = calls.find((call) => call.url.endsWith("/api/v1/cards"))!;

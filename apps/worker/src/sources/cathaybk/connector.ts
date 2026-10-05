@@ -685,6 +685,7 @@ export async function completeCathayTrustedDeviceSetup(
 export type CathayLoginPage = Pick<
   Page,
   | "$"
+  | "addScriptTag"
   | "click"
   | "evaluate"
   | "goto"
@@ -899,6 +900,65 @@ export async function submitCathayLoginForm(
   if (!invokedBankHandler) await page.click(".js-login");
 }
 
+/**
+ * 國泰登入頁的 inline `NormalDataCheck()` 仍直接依賴全域 `$`。銀行的
+ * jQuery script 偶爾會比頁面其他資源晚完成，Browser Rendering 若在這個
+ * 空窗送出表單就會得到 `$ is not defined`。先沿用頁面已載入的 jQuery；
+ * 若 script 載入失敗，僅重新載入登入頁本身宣告的同源 jQuery，不注入外部程式。
+ */
+export async function ensureCathayJQuery(
+  page: Pick<Page, "addScriptTag" | "evaluate" | "waitForFunction">,
+) {
+  const installAlias = () =>
+    page.evaluate(() => {
+      const bankWindow = window as typeof window & {
+        $?: unknown;
+        jQuery?: unknown;
+      };
+      if (typeof bankWindow.$ === "function") return true;
+      if (typeof bankWindow.jQuery !== "function") return false;
+      bankWindow.$ = bankWindow.jQuery;
+      return true;
+    });
+
+  if (await installAlias()) return;
+  await page
+    .waitForFunction(
+      () => {
+        const bankWindow = window as typeof window & {
+          $?: unknown;
+          jQuery?: unknown;
+        };
+        return (
+          typeof bankWindow.$ === "function" ||
+          typeof bankWindow.jQuery === "function"
+        );
+      },
+      { timeout: 10_000 },
+    )
+    .catch(() => null);
+  if (await installAlias()) return;
+
+  const scriptUrl = await page.evaluate(() => {
+    const script = Array.from(document.scripts).find((candidate) =>
+      /\/jquery(?:[.-]|\.js)/i.test(
+        new URL(candidate.src, location.href).pathname,
+      ),
+    );
+    if (!script?.src) return null;
+    const url = new URL(script.src, location.href);
+    return url.origin === location.origin ? url.toString() : null;
+  });
+  if (!scriptUrl) {
+    throw new Error("Cathay login page did not provide its jQuery script.");
+  }
+
+  await page.addScriptTag({ url: scriptUrl });
+  if (!(await installAlias())) {
+    throw new Error("Cathay login page jQuery failed to initialize.");
+  }
+}
+
 export function isCathayAuthenticatedUrl(value: string) {
   try {
     const path = new URL(value).pathname.replace(/\/+$/, "").toLowerCase();
@@ -926,6 +986,8 @@ export async function loginCathay(
     await dismissInterstitialIfPresent(page);
     await dismissCathaySystemMessageIfPresent(page);
     await page.waitForSelector("#CustID", { timeout: 15000 });
+    // 關閉「未正常登出」提示可能會重新載入登入頁，每次送出前都重新確認。
+    await ensureCathayJQuery(page);
 
     await page.click("#CustID", { clickCount: 3 });
     await page.type("#CustID", config.userId!.toUpperCase());

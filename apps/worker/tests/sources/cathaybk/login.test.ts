@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { dismissCathaySystemMessageIfPresent } from "../../../src/sources/cathaybk/connector";
+import {
+  dismissCathaySystemMessageIfPresent,
+  ensureCathayJQuery,
+} from "../../../src/sources/cathaybk/connector";
 
 describe("國泰登入公告", () => {
   it.each([[], ["我知道了"], ["下一則", "下一則", "我知道了"]])(
@@ -48,5 +51,67 @@ describe("國泰登入公告", () => {
       expect(button.click).toHaveBeenCalledTimes(label === "立即啟用" ? 0 : 20);
       expect(page.waitForSelector).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("國泰登入頁 jQuery", () => {
+  it("沿用已載入的 jQuery 並補上全域 $ alias", async () => {
+    const evaluate = vi.fn().mockResolvedValueOnce(true);
+    const page = {
+      addScriptTag: vi.fn(),
+      evaluate,
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      ensureCathayJQuery(
+        page as unknown as Parameters<typeof ensureCathayJQuery>[0],
+      ),
+    ).resolves.toBeUndefined();
+    expect(page.waitForFunction).not.toHaveBeenCalled();
+    expect(page.addScriptTag).not.toHaveBeenCalled();
+  });
+
+  it("載入失敗時只重新載入銀行頁面宣告的同源 jQuery", async () => {
+    const page = {
+      addScriptTag: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(
+          "https://www.cathaybk.com.tw/MyBank/Content/CUB/js/jQuery.js?v=1",
+        )
+        .mockResolvedValueOnce(true),
+      waitForFunction: vi.fn().mockRejectedValue(new Error("timeout")),
+    };
+
+    await expect(
+      ensureCathayJQuery(
+        page as unknown as Parameters<typeof ensureCathayJQuery>[0],
+      ),
+    ).resolves.toBeUndefined();
+    expect(page.addScriptTag).toHaveBeenCalledWith({
+      url: "https://www.cathaybk.com.tw/MyBank/Content/CUB/js/jQuery.js?v=1",
+    });
+  });
+
+  it("頁面沒有同源 jQuery 時停止登入", async () => {
+    const page = {
+      addScriptTag: vi.fn(),
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(null),
+      waitForFunction: vi.fn().mockRejectedValue(new Error("timeout")),
+    };
+
+    await expect(
+      ensureCathayJQuery(
+        page as unknown as Parameters<typeof ensureCathayJQuery>[0],
+      ),
+    ).rejects.toThrow("did not provide its jQuery script");
+    expect(page.addScriptTag).not.toHaveBeenCalled();
   });
 });
