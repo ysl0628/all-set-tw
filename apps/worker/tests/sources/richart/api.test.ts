@@ -79,7 +79,7 @@ describe("Richart API client", () => {
     expect(captcha.dataUri.startsWith("data:image/jpeg;base64,")).toBe(true);
     await client.login(credentials, {
       securityCodeSessionId: captcha.securityCodeSessionId,
-      securityCode: "1234",
+      securityCode: "12345",
     });
     expect(bank.calls.map((call) => call.url.split("/").slice(-1)[0])).toEqual([
       "getSecurityCode",
@@ -87,14 +87,36 @@ describe("Richart API client", () => {
       "isRepeated",
       "login",
     ]);
-    const login = bank.calls[3]!;
-    expect(login.cookie).toContain("JSESSIONID=synthetic");
-    expect(login.body).toMatchObject({
+    // 欄位名稱必須與官方 callIsRepeated／callLogin 送出的 body 完全一致。
+    const repeated = bank.calls[2]!;
+    expect(Object.keys(repeated.body).sort()).toEqual([
+      "mac",
+      "password",
+      "pid",
+      "securityCode",
+      "securityCodeSessionId",
+      "sessionId",
+      "userMac",
+      "userName",
+    ]);
+    expect(repeated.body).toMatchObject({
       pid: "A123456789",
       sessionId: "e2e-session",
       securityCodeSessionId: "CMPLogin_synthetic",
-      securityCode: "1234",
+      securityCode: "12345",
     });
+    const login = bank.calls[3]!;
+    expect(login.cookie).toContain("JSESSIONID=synthetic");
+    expect(Object.keys(login.body).sort()).toEqual([
+      "deviceInfo",
+      "mac",
+      "password",
+      "pid",
+      "sessionId",
+      "updatedApp",
+      "userMac",
+      "userName",
+    ]);
     expect(login.body.userName).toMatch(/^[0-9a-f]{32}$/);
     expect(login.body.password).toMatch(/^[0-9a-f]{32}$/);
     expect(JSON.stringify(bank.calls)).not.toContain("pass5678");
@@ -112,7 +134,7 @@ describe("Richart API client", () => {
     await expect(
       client.login(credentials, {
         securityCodeSessionId: "CMPLogin_synthetic",
-        securityCode: "1234",
+        securityCode: "12345",
       }),
     ).rejects.toMatchObject({ kind: "session_conflict" });
     expect(bank.calls.some((call) => call.url.endsWith("/login"))).toBe(false);
@@ -129,7 +151,7 @@ describe("Richart API client", () => {
     const error = await new RichartApiClient({ fetcher: bank.fetcher })
       .login(credentials, {
         securityCodeSessionId: "CMPLogin_synthetic",
-        securityCode: "1234",
+        securityCode: "12345",
       })
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(RichartApiError);

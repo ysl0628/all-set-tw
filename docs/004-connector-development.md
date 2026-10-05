@@ -491,10 +491,14 @@ Richart 網銀（`richart.tw/WebBank`）Angular 前端使用的內部 API（`/TS
 不使用 Browser Rendering。端點、欄位名稱與錯誤分流取自 2026-10-04 公開的網銀 bundle，
 尚未以真實登入回應驗證，取得去識別化的回應前，解析測試使用合成 fixture。
 
-- 登入依官方網銀順序：`POST /SecurityCodeService/getSecurityCode` 取得 4 位數字檢核碼圖片與
+- 登入依官方網銀順序：`POST /SecurityCodeService/getSecurityCode` 取得 4～5 位數字檢核碼圖片（位數每次由銀行動態決定）與
   `fakeSessionId`（同時發出 `JSESSIONID`），`POST /E2EService/NoSecurity/E2EInit` 交換 P-256
   公鑰，`POST /AuthService/isRepeated`，最後 `POST /AuthService/login`。所有 API 的 HTTP status
   都是 200，以 `stat: "ok" | "error"` 判斷成功。登出為 `GET /AuthService/logout`。
+- `isRepeated` 與 `login` 的 body 欄位名稱依官方 `callIsRepeated`／`callLogin` 實際送出的格式：
+  `pid`、`userName`、`userMac`、`password`、`mac`、`sessionId`；檢核碼（`securityCodeSessionId`、
+  `securityCode`）只在 `isRepeated` 送出。官方元件內部的 `identity`、`encodeUserName`、`pwd`
+  只是送出前的變數名，直接送出會得到 `SYS05001`。
 - 使用者代號與密碼以 `e2ee.ts` 加密：用戶端金鑰直接與伺服器公鑰做 ECDH，
   `SHA-512(sharedX || 00000001)` 前半為 AES-256-CBC 金鑰、後半為 HMAC-SHA256 金鑰，IV 取 MAC
   金鑰前 16 bytes；使用者代號會先對調前後半。測試向量由官方 `e2eeclient.js` 以合成金鑰產生。

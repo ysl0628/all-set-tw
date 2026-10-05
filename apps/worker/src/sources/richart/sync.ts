@@ -126,7 +126,8 @@ export async function prepareRichartCaptchaSession(env: Env) {
     return {
       captchaImage: challenge.dataUri,
       expiresAt: new Date(challenge.expiresAt).toISOString(),
-      captchaLength: RICHART_CAPTCHA_LENGTH,
+      captchaLength: RICHART_CAPTCHA_LENGTH.max,
+      captchaMinLength: RICHART_CAPTCHA_LENGTH.min,
       captchaKind: "numeric" as const,
     };
   } finally {

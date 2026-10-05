@@ -3,6 +3,9 @@ export class ValidateNumberEmptyImageError extends Error {}
 export class ValidateNumberOcrError extends Error {}
 export class ValidateNumberOcrUnavailableError extends Error {}
 
+/** 銀行每次動態決定驗證碼位數時，以最小與最大位數表示。 */
+export type CaptchaLengthRange = { min: number; max: number };
+
 export const VALIDATE_NUMBER_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const TRANSIENT_AI_RETRY_DELAY_MS = 500;
 const TRANSIENT_AI_MAX_ATTEMPTS = 2;
@@ -19,15 +22,19 @@ export async function recognizeNumericCaptcha(
   ai: Ai,
   imageBytes: ArrayBuffer,
   contentType: string | undefined,
-  digitCount: number,
+  digitCount: number | CaptchaLengthRange,
 ) {
+  const length =
+    typeof digitCount === "number"
+      ? { min: digitCount, max: digitCount }
+      : digitCount;
   const result = await recognizeCaptcha(
     ai,
     imageBytes,
     contentType,
-    digitCount,
+    length,
     `digits in this CAPTCHA`,
-    new RegExp(`^\\d{${digitCount}}$`),
+    new RegExp(`^\\d{${length.min},${length.max}}$`),
   );
   return { number: result.value, model: result.model };
 }
@@ -42,7 +49,7 @@ export async function recognizeAlphanumericCaptcha(
     ai,
     imageBytes,
     contentType,
-    characterCount,
+    { min: characterCount, max: characterCount },
     `case-sensitive ASCII letters or digits in this CAPTCHA`,
     new RegExp(`^[A-Za-z0-9]{${characterCount}}$`),
   );
@@ -53,7 +60,7 @@ async function recognizeCaptcha(
   ai: Ai,
   imageBytes: ArrayBuffer,
   contentType: string | undefined,
-  characterCount: number,
+  length: CaptchaLengthRange,
   characterDescription: string,
   expectedPattern: RegExp,
 ) {
@@ -68,11 +75,17 @@ async function recognizeCaptcha(
   )
     throw new ValidateNumberOcrError();
   if (
-    !Number.isInteger(characterCount) ||
-    characterCount < 4 ||
-    characterCount > 8
+    !Number.isInteger(length.min) ||
+    !Number.isInteger(length.max) ||
+    length.min < 4 ||
+    length.max > 8 ||
+    length.min > length.max
   )
     throw new ValidateNumberOcrError();
+  const count =
+    length.min === length.max
+      ? String(length.min)
+      : `${length.min} to ${length.max}`;
 
   const model: string = VALIDATE_NUMBER_MODEL;
   const input = {
@@ -82,7 +95,7 @@ async function recognizeCaptcha(
         content: [
           {
             type: "text" as const,
-            text: `Read the ${characterCount} ${characterDescription}. Return exactly ${characterCount} ${characterDescription.startsWith("digits") ? "digits" : "characters"} and nothing else.`,
+            text: `Read the ${count} ${characterDescription}. Return exactly ${count} ${characterDescription.startsWith("digits") ? "digits" : "characters"} and nothing else.`,
           },
           {
             type: "image_url" as const,

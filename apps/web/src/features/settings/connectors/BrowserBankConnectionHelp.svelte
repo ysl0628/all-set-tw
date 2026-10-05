@@ -8,6 +8,7 @@
     captchaImage,
     captcha = $bindable(),
     digitCount,
+    minDigitCount = digitCount,
     captchaKind = "numeric",
     preparing,
     verifying,
@@ -31,6 +32,8 @@
     captchaImage: string;
     captcha?: string;
     digitCount: number;
+    /** 銀行動態決定位數時的最小位數；未提供時與 `digitCount` 相同。 */
+    minDigitCount?: number;
     captchaKind?: "numeric" | "alphanumeric";
     preparing: boolean;
     verifying: boolean;
@@ -41,6 +44,11 @@
   } = $props();
 
   const expired = $derived(expiresIn !== undefined && expiresIn <= 0);
+  const digitCountLabel = $derived(
+    minDigitCount === digitCount
+      ? `${digitCount}`
+      : `${minDigitCount}-${digitCount}`,
+  );
   const operationPending = $derived(preparing || verifying || syncing);
 </script>
 
@@ -48,7 +56,7 @@
   {#if captchaImage}
     <div class="mt-3 rounded-md border border-ink/10 bg-paper p-3">
       <p class="text-sm font-medium text-ink/80">
-        請輸入圖片中的 {digitCount} 位{captchaKind === "alphanumeric"
+        請輸入圖片中的 {digitCountLabel} 位{captchaKind === "alphanumeric"
           ? "英數字"
           : "數字"}，{expiresIn === undefined
           ? "驗證碼約兩分鐘內有效。"
@@ -66,7 +74,7 @@
           class="min-w-40 flex-1"
           inputmode={captchaKind === "alphanumeric" ? "text" : "numeric"}
           maxlength={digitCount}
-          placeholder={`${digitCount} 位${captchaKind === "alphanumeric" ? "英數字" : "數字"}驗證碼`}
+          placeholder={`${digitCountLabel} 位${captchaKind === "alphanumeric" ? "英數字" : "數字"}驗證碼`}
           bind:value={captcha}
         />
         <Button

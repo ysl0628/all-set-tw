@@ -10,7 +10,11 @@ const USER_AGENT =
 const REQUEST_TIMEOUT_MS = 30_000;
 /** 待人工輸入的檢核碼與其 session cookie 只短暫保存。 */
 export const RICHART_CAPTCHA_TTL_MS = 2 * 60_000;
-export const RICHART_CAPTCHA_LENGTH = 4;
+/** 檢核碼位數由銀行每次動態決定，實際看過 4 碼與 5 碼。 */
+export const RICHART_CAPTCHA_LENGTH = { min: 4, max: 5 } as const;
+export const RICHART_CAPTCHA_PATTERN = new RegExp(
+  `^\\d{${RICHART_CAPTCHA_LENGTH.min},${RICHART_CAPTCHA_LENGTH.max}}$`,
+);
 
 export type RichartErrorKind =
   | "credentials"
@@ -119,7 +123,7 @@ export class RichartApiClient {
     ) {
       throw new RichartApiError("credentials", "login");
     }
-    if (!/^\d{4}$/.test(captcha.securityCode)) {
+    if (!RICHART_CAPTCHA_PATTERN.test(captcha.securityCode)) {
       throw new RichartApiError("captcha", "login");
     }
     const keyPair = await createRichartE2eeKeyPair();
@@ -148,16 +152,19 @@ export class RichartApiClient {
     } catch {
       throw new RichartApiError("protocol", "e2e_encrypt");
     }
-    const pid = identity.toUpperCase();
+    // 欄位名稱依官方 callIsRepeated／callLogin 實際送出的 body；檢核碼只在 isRepeated 驗證。
+    const credentialFields = {
+      pid: identity.toUpperCase(),
+      userName: encodedUser.cipherHex,
+      userMac: encodedUser.macHex,
+      password: encodedPassword.cipherHex,
+      mac: encodedPassword.macHex,
+      sessionId,
+    };
     const repeated = await this.post(
       "/AuthService/isRepeated",
       {
-        identity: pid,
-        encodeUserName: encodedUser.cipherHex,
-        userMac: encodedUser.macHex,
-        pwd: encodedPassword.cipherHex,
-        mac: encodedPassword.macHex,
-        sessionId,
+        ...credentialFields,
         securityCodeSessionId: captcha.securityCodeSessionId,
         securityCode: captcha.securityCode,
       },
@@ -170,16 +177,9 @@ export class RichartApiClient {
     await this.post(
       "/AuthService/login",
       {
-        pid,
-        userName: encodedUser.cipherHex,
-        userMac: encodedUser.macHex,
-        password: encodedPassword.cipherHex,
-        mac: encodedPassword.macHex,
-        sessionId,
+        ...credentialFields,
         updatedApp: false,
         deviceInfo: { os: "Web", appVersion: "", deviceId: "" },
-        securityCodeSessionId: captcha.securityCodeSessionId,
-        securityCode: captcha.securityCode,
       },
       "login",
       true,

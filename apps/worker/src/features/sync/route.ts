@@ -18,7 +18,10 @@ import {
   MegabankVerificationRequiredError,
 } from "../../sources/megabank/mobile-api";
 import { HsbcApiError } from "../../sources/hsbc/api";
-import { RichartApiError } from "../../sources/richart/api";
+import {
+  RICHART_CAPTCHA_PATTERN,
+  RichartApiError,
+} from "../../sources/richart/api";
 import { zValidator } from "@hono/zod-validator";
 import { type Context, type Hono } from "hono";
 import { z } from "zod";
@@ -144,10 +147,7 @@ const hsbcSyncBodySchema = z.object({
 });
 
 const richartSyncBodySchema = z.object({
-  captcha: z
-    .string()
-    .regex(/^\d{4}$/)
-    .optional(),
+  captcha: z.string().regex(RICHART_CAPTCHA_PATTERN).optional(),
 });
 
 const cathaySyncBodySchema = z.object({
@@ -845,7 +845,7 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
     zValidator(
       "json",
       richartSyncBodySchema,
-      validationHook("INVALID_REQUEST", "Richart 檢核碼須為 4 位數字。"),
+      validationHook("INVALID_REQUEST", "Richart 檢核碼須為 4-5 位數字。"),
     ),
     async (c) => {
       const overrides = c.req.valid("json");
