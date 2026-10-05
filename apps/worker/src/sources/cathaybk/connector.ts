@@ -14,6 +14,11 @@ import type {
 import { BANK_SYNC_MONTHS } from "../sync-window";
 import { isNoCreditCardMessage } from "../credit-card-status";
 import { type CathaybkConfig } from "./protocol";
+import {
+  collectCathayForeignPayloads,
+  parseCathayForeignPayloads,
+  type CathayForeignData,
+} from "./foreign";
 
 const LOGIN_URL = "https://www.cathaybk.com.tw/MyBank/";
 const DEPOSIT_OVERVIEW_URL =
@@ -222,6 +227,9 @@ async function scrapeWithBrowser(
     console.log("[cathaybk] collecting deposit accounts");
     const deposits = await scrapeDeposits(page, syncWindowDays);
 
+    console.log("[cathaybk] collecting foreign currency deposits");
+    const foreign = await scrapeForeignDeposits(page, syncWindowDays);
+
     console.log("[cathaybk] collecting credit cards");
     const cards = await scrapeCreditCards(page);
 
@@ -230,13 +238,19 @@ async function scrapeWithBrowser(
     loggedOut = true;
 
     return {
-      bankAccounts: [...deposits.bankAccounts, ...cards.bankAccounts],
+      bankAccounts: [
+        ...deposits.bankAccounts,
+        ...foreign.bankAccounts,
+        ...cards.bankAccounts,
+      ],
       bankBalanceSnapshots: [
         ...deposits.bankBalanceSnapshots,
+        ...foreign.bankBalanceSnapshots,
         ...cards.bankBalanceSnapshots,
       ],
       bankTransactions: [
         ...deposits.bankTransactions,
+        ...foreign.bankTransactions,
         ...cards.bankTransactions,
       ],
       creditCardBills: cards.creditCardBills,
@@ -1416,6 +1430,44 @@ export function appendCathayDepositTransactions(
       description: desc,
       raw: { ...d, duplicateOccurrence: occ },
     });
+  }
+}
+
+/**
+ * 外幣活存讀取或格式失敗時略過外幣，不影響臺幣與信用卡；
+ * 不寫入外幣資料，既有外幣餘額維持上次同步結果。
+ */
+async function scrapeForeignDeposits(
+  page: Page,
+  lookbackDays: number,
+): Promise<CathayForeignData> {
+  const empty = {
+    bankAccounts: [],
+    bankBalanceSnapshots: [],
+    bankTransactions: [],
+  };
+  try {
+    const payloads = await collectCathayForeignPayloads(page, lookbackDays);
+    if (!payloads) {
+      console.warn("[cathaybk] foreign deposits skipped: no JWT");
+      return empty;
+    }
+    const result = parseCathayForeignPayloads(
+      payloads,
+      new Date().toISOString(),
+    );
+    console.log(
+      `[cathaybk] foreign accounts=${result.bankAccounts.length} tx=${result.bankTransactions.length}`,
+    );
+    return result;
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "cathaybk_foreign_failed",
+        errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+      }),
+    );
+    return empty;
   }
 }
 
