@@ -11,6 +11,7 @@ const RAKUTEN_BANK_CODE = "826";
 const FIRSTBANK_BANK_CODE = "007";
 const MEGABANK_BANK_CODE = "017";
 const TAISHIN_BANK_CODE = "812";
+const DBS_BANK_CODE = "810";
 const TAIWAN_BANK_NAMES: Record<string, string> = {
   "004": "台灣銀行",
   "005": "土地銀行",
@@ -113,6 +114,10 @@ export function deriveBankMatchKey(
       last4: sourceId.split(":")[2] ?? null,
     };
   }
+  if (connectorId === "dbs" && /^bank:dbs:d{4}:/.test(sourceId)) {
+    // 帳戶名稱已含末四碼；sourceId 只保留末四碼與雜湊。
+    return { bankCode: DBS_BANK_CODE, last4: sourceId.split(":")[2] ?? null };
+  }
   const match = sourceId.match(/^settlement:([^:]+):([^:]+)/);
   const last4 = match?.[2]?.replace(/\D/g, "").slice(-4) ?? "";
   return match
@@ -192,7 +197,9 @@ function normalizeDepositDisplay<T extends BankDisplayRow>(row: T): T {
                       ? MEGABANK_BANK_CODE
                       : row.connectorId === "rakuten"
                         ? RAKUTEN_BANK_CODE
-                        : undefined);
+                        : row.connectorId === "dbs"
+                          ? DBS_BANK_CODE
+                          : undefined);
   const accountSuffix = accountSuffixFromSourceId(sourceId);
   return {
     ...row,

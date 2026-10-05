@@ -103,4 +103,8 @@ export const connectorFields = {
     { key: "account", label: "Richart 使用者代號", type: "text" },
     { key: "password", label: "Richart 使用者密碼", type: "password" },
   ],
+  dbs: [
+    { key: "account", label: "網路銀行使用者代號", type: "text" },
+    { key: "password", label: "網路銀行密碼", type: "password" },
+  ],
 } satisfies ConnectorFieldMap;

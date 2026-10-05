@@ -62,6 +62,7 @@ import {
   syncRichart,
   type RichartSyncOverrides,
 } from "../../sources/richart/sync";
+import { syncDbs } from "../../sources/dbs/sync";
 import { SYNC_SCOPE_ALL, type SyncOutcome, type SyncScope } from "./types";
 
 type ConnectorRuntimeDefinition = {
@@ -159,6 +160,9 @@ export const connectorRuntimeRegistry: Record<
     run: (env, trigger, _scope, overrides) =>
       syncRichart(env, trigger, overrides as RichartSyncOverrides),
     prepareChallenge: prepareRichartCaptchaSession,
+  },
+  dbs: {
+    run: (env, trigger) => syncDbs(env, trigger),
   },
 };
 

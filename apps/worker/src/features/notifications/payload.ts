@@ -34,6 +34,7 @@ const connectorLabels: Record<ConnectorId, string> = {
   rakuten: "樂天國際銀行",
   hsbc: "匯豐銀行",
   richart: "Richart",
+  dbs: "星展銀行",
 };
 
 export function syncNotificationPayload(
