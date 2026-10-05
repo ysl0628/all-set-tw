@@ -13,6 +13,7 @@
     getPendingSyncJobs,
     getSyncSourceStatus,
     getSyncSourceStatusLabel,
+    sortConnectedSourcesFirst,
   } from "@/data/connectors/sync-status";
   import type { ConnectorId, SyncJobRow } from "@/data/connectors/types";
   let {
@@ -148,9 +149,8 @@
     </div>
     <Card
       ><div class="divide-y divide-ink/8">
-        {#each sources as source (source.id)}{@const job = jobs.find(
-            (item) => item.connectorId === source.id,
-          )}
+        {#each sortConnectedSourcesFirst(sources, jobs) as source (source.id)}{@const job =
+            jobs.find((item) => item.connectorId === source.id)}
           <button
             type="button"
             class="flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm transition hover:bg-paper focus-visible:outline-2 focus-visible:outline-steel"

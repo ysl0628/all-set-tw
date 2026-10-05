@@ -56,3 +56,16 @@ export function getPendingSyncJobs(jobs: SyncJobRow[]) {
     (job) => getSyncSourceStatus(job) === "not_synced",
   );
 }
+
+/** 已設定（已連接）的資料來源排在前面，其餘維持 catalog 原順序。 */
+export function sortConnectedSourcesFirst<T extends { id: string }>(
+  sources: readonly T[],
+  jobs: SyncJobRow[],
+) {
+  const connected = new Set<string>(
+    getConfiguredSyncJobs(jobs).map((job) => job.connectorId),
+  );
+  return [...sources].sort(
+    (a, b) => Number(connected.has(b.id)) - Number(connected.has(a.id)),
+  );
+}

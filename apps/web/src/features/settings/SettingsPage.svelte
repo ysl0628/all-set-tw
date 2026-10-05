@@ -13,6 +13,7 @@
   import {
     getActionableSyncJobs,
     getConfiguredSyncJobs,
+    sortConnectedSourcesFirst,
     getHealthySyncJobs,
     getPendingSyncJobs,
   } from "@/data/connectors/sync-status";
@@ -74,6 +75,9 @@
   const needsActionJobs = $derived(getActionableSyncJobs(syncJobRows));
   const pendingSyncJobs = $derived(getPendingSyncJobs(syncJobRows));
   const configuredSources = $derived(getConfiguredSyncJobs(syncJobRows));
+  const orderedSources = $derived(
+    sortConnectedSourcesFirst(sources, syncJobRows),
+  );
   const healthySources = $derived(getHealthySyncJobs(syncJobRows));
   const needsAction = $derived(needsActionJobs.length);
   const pendingSources = $derived(pendingSyncJobs.length);
@@ -232,7 +236,7 @@
           aria-label="資料來源清單"
           class="grid min-w-0 content-start gap-3"
         >
-          {#each sources as source (source.id)}
+          {#each orderedSources as source (source.id)}
             <SourceCard
               {api}
               {...source}
@@ -291,7 +295,7 @@
         aria-label="資料來源與連接器"
         class="grid min-w-0 gap-3 sm:grid-cols-2 md:hidden"
       >
-        {#each sources as source (source.id)}
+        {#each orderedSources as source (source.id)}
           <div
             class={`min-w-0 scroll-mt-24 ${activeConnector === source.id ? "sm:col-span-2" : ""}`}
             data-connector-settings={source.id}
@@ -621,7 +625,7 @@
             >
           </div>
           <div class="mt-2">
-            {#each sources as source (source.id)}
+            {#each orderedSources as source (source.id)}
               <SourceCard
                 {api}
                 {...source}
