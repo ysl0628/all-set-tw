@@ -24,7 +24,7 @@ Connector 採三層 registry：
 
 | Mode                      | 適用情境                                                 | 現有範例                            |
 | ------------------------- | -------------------------------------------------------- | ----------------------------------- |
-| `api_credentials`         | 帳密登入外部 API，可自行更新 token                       | 電子發票、中信、新光                |
+| `api_credentials`         | 帳密登入外部 API，可自行更新 token                       | 電子發票、中信、新光、星展          |
 | `api_captcha_session`     | App API 登入含 CAPTCHA，challenge 僅短暫加密保存         | 王道、兆豐銀行、將來、匯豐、Richart |
 | `api_device_otp`          | API 登入，首次裝置需要 OTP                               | 集保 e 存摺                         |
 | `browser_per_sync`        | 每次同步都必須以 Browser 登入與擷取                      | 國泰世華                            |
@@ -526,3 +526,28 @@ Richart 網銀（`richart.tw/WebBank`）Angular 前端使用的內部 API（`/TS
   主帳戶以 `bank:richart:<末四碼>:<雜湊>:TWD` 為 sourceId，銀行代碼 812，可與集保交割帳戶配對。
 - 外部 API 失敗時只記錄 `richart_api_error` 的操作名稱、錯誤類型與白名單格式的銀行錯誤代碼，
   不記錄銀行訊息、帳密或 cookie。
+
+### 星展銀行
+
+直接呼叫星展網銀（`internet-banking.dbs.com.tw/digitw`）前端使用的 API，連接模式為
+`api_credentials`，只需使用者代號與密碼，不保存 token 或 session。
+
+- 網銀登入只走 1FA；簡訊 OTP 只在不同步的功能才會要求，排程與手動同步都不得觸發。
+- **登入 client 尚未實作**：`sources/dbs/api.ts` 的 `loginDbs` 目前一律拋出
+  `not_implemented`，同步回報「星展登入流程尚未完成」而不寫入資料；預設排程（`0055_dbs_sync_job.sql`）停用。
+  實作需回傳 `DbsSession`：負責 bearer token、cookie 與共用 header，登入失敗只嘗試一次，
+  並以 `credentials`、`locked`、`duplicate_session` 等 `DbsApiError` 類型回報，同步結束一律登出。
+- 資料欄位依使用者錄製的去識別化 HAR 確認：
+  - `dashboard/channels/customerFinancialOverview/assets`（`actionId: DASHBOARD-ASSET`、x-version 3.0.0）的
+    `casa.accounts`。`multiCurrencyAccountFlag` 為 true 的外幣總戶沒有幣別與餘額，略過；各幣別子帳戶各為一個帳戶。
+  - 帳戶 sourceId 為 `bank:dbs:<末四碼>:<雜湊>:<幣別>`，以 `displayAccountNumber` 計算。
+    `globalAccountId` 是登入期間的不透明代號，只用於查詢明細，不作為識別。
+  - 帳戶名稱使用 `schemeName`（如「臺幣數位存款」）；`casa-accounts/{id}` 的 `accountName` 是戶名，不使用。
+  - 明細 `deposit-accounts/transactions-history/inquiry`（`DEPOSIT-TXN-HISTORY`、x-version 1.2.0）一次查一個月；
+    當月 `toDate` 為現在並帶 `isCurrentMonth` 與 `isCurrentMonthHeader`。正負號依 `side`（D 支出、C 存入），
+    金額取字串 `amount.balance`；明細的 `displayBalance` 恆為 0，不可使用。回溯以 `transactionDate` 判斷，
+    跨月份重複以交易序號與內容去重；說明為摘要加備註，備註中的長帳號只保留末四碼。
+  - 分頁依 `pageInfo.nextCursor` 續查，每月最多 20 頁；目前錄到的月份都只有一頁，續頁請求格式尚待確認。
+  - 信用卡 `liabilities` 的 `paymentDetails` 是整個卡戶一筆應繳，以單一 `credit:dbs:main` 帳戶表示，
+    餘額為已出帳應繳減已繳，不含未出帳消費。
+  - 定存：總覽只有定存帳號而無金額，HAR 未錄到定存頁；未接入，避免以 0 低估資產。
