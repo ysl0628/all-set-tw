@@ -24,10 +24,10 @@ Connector 採三層 registry：
 
 | Mode                      | 適用情境                                                 | 現有範例                            |
 | ------------------------- | -------------------------------------------------------- | ----------------------------------- |
-| `api_credentials`         | 帳密登入外部 API，可自行更新 token                       | 電子發票、中信、新光、星展          |
+| `api_credentials`         | 帳密登入外部 API，可自行更新 token                       | 電子發票、中信、新光                |
 | `api_captcha_session`     | App API 登入含 CAPTCHA，challenge 僅短暫加密保存         | 王道、兆豐銀行、將來、匯豐、Richart |
 | `api_device_otp`          | API 登入，首次裝置需要 OTP                               | 集保 e 存摺                         |
-| `browser_per_sync`        | 每次同步都必須以 Browser 登入與擷取                      | 國泰世華                            |
+| `browser_per_sync`        | 每次同步都必須以 Browser 登入與擷取                      | 國泰世華、星展                      |
 | `browser_session`         | Browser 只負責登入，後續使用可復用的 HTTP session        | 玉山                                |
 | `browser_captcha_session` | Browser 登入含 CAPTCHA，可由 AI 或人工完成並復用 session | 永豐、台新、華南、第一銀行、凱基    |
 
@@ -537,8 +537,10 @@ Richart 網銀（`richart.tw/WebBank`）Angular 前端使用的內部 API（`/TS
 
 ### 星展銀行
 
-直接呼叫星展網銀（`internet-banking.dbs.com.tw/digitw`）前端使用的 API，連接模式為
-`api_credentials`，只需使用者代號與密碼，不保存 token 或 session。
+呼叫星展網銀（`internet-banking.dbs.com.tw/digitw`）前端使用的 API，只需使用者代號與密碼，不保存 token 或 session。
+正式環境 Worker 直接連線會在第一個請求收到 403，因此連接模式為 `browser_per_sync`：每次同步以 Browser Rendering
+開啟網銀首頁，在頁面內以同源 `fetch` 送出相同的登入與資料請求（`sources/dbs/browser.ts`），cookie 與 `Origin`、`Referer`
+由瀏覽器管理，只允許星展網銀網域；同步結束先登出再關閉瀏覽器。網銀首頁本身被擋時以 `entry` 步驟與 HTTP 狀態記錄。
 
 - 網銀登入只走 1FA；簡訊 OTP 只在不同步的功能才會要求，排程與手動同步都不得觸發。
 - 登入（`sources/dbs/login.ts`）：`/iam/v2/random` 取得 `random` 與 `preAuthId`，`/iam/v1/publickey/CN2048`
