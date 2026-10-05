@@ -268,6 +268,8 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 
 外幣活存在臺幣存款之後讀取：進入外幣存款總覽（`FAcctInq/R0101_FDepInq`），在頁內以 `GetJWT` 取得的 token 呼叫 `ClientForeign/R_ACCT_Q_OverView` 與各幣別的 `R_ACCT_Q_TransferDetail`（一次最多一年）。每個帳號的每個幣別是一個帳戶，sourceId 為 `bank:cathaybk:<帳號>:<幣別>`；交易金額為正值，方向依 `debitCreditType`（`Debit` 支出、`Credit` 存入；目前只在真實資料看過 `Credit`）。外幣讀取或格式失敗時只略過外幣並記錄 `cathaybk_foreign_failed`，不影響臺幣與信用卡。外幣定存（`depositAccounts`）的格式尚未確認，未接入。
 
+信用卡總覽在瀏覽器端先精簡頁面文字（每行 200 字、總長 20,000 字）再傳回 Worker；解析只用有界或逐行的比對，不在整段文字上使用 lazy 比對，避免長頁面耗盡 Worker CPU。
+
 信用卡總覽偵測不到卡號時，必須有明確無卡提示，或具備信用卡總覽與「立即線上辦卡」的無卡頁面內容，才回傳空的信用卡資料。空白、維護或無法辨識的頁面使同步失敗，不能僅因缺少卡號就當成無卡。
 
 ### 永豐銀行
