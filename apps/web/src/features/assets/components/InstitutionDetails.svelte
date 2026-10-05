@@ -43,11 +43,21 @@
       : undefined;
   }
 
+  /** 合併計算的卡片只有分卡的本期消費小計（如玉山多卡）。 */
+  function sharedCardLatestBill(card: BankAccountRow) {
+    return sharedBalanceCard(card)
+      ? institutionBills.find((bill) => bill.accountId === card.id)
+      : undefined;
+  }
+
   function cardPaymentLabel(card: BankAccountRow) {
     const shared = sharedBalanceCard(card);
     if (shared) {
       const name = shared.accountName ?? formatBankAccountName(shared);
-      return `與「${name}」合併計算帳單`;
+      const bill = sharedCardLatestBill(card);
+      return bill?.statementAmount != null
+        ? `${bill.billingPeriod} 本期消費 · 與「${name}」合併計算帳單`
+        : `與「${name}」合併計算帳單`;
     }
     if (card.balance != null && card.balance > 0) return "溢繳餘額，無需繳款";
     const latestBill = institutionBills.find(
@@ -198,13 +208,22 @@
                 {cardPaymentLabel(card)}
               </p>
             </div>
-            <p class="text-right text-sm font-medium tabular-nums text-coral">
-              {card.balance != null
-                ? formatCurrency(card.balance, card.currency)
-                : sharedBalanceCard(card)
-                  ? "已併入卡戶"
-                  : "剩餘應繳金額未取得"}
-            </p>
+            {#if card.balance == null && sharedCardLatestBill(card)?.statementAmount != null}
+              {@const bill = sharedCardLatestBill(card)!}
+              <p
+                class="text-right text-sm font-medium tabular-nums text-subtle"
+              >
+                {formatCurrency(bill.statementAmount!, bill.currency)}
+              </p>
+            {:else}
+              <p class="text-right text-sm font-medium tabular-nums text-coral">
+                {card.balance != null
+                  ? formatCurrency(card.balance, card.currency)
+                  : sharedBalanceCard(card)
+                    ? "已併入卡戶"
+                    : "剩餘應繳金額未取得"}
+              </p>
+            {/if}
           </div>
         {/each}
       </div>

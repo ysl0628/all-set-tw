@@ -59,8 +59,16 @@ export interface EsunSnapshot {
   creditHistory: unknown[];
   billSummary: unknown;
   billPeriod: string | null;
+  /** 帳單明細中每張卡的本期消費小計；應繳金額仍以整個卡戶計算。 */
+  cardBillSubtotals?: EsunCardBillSubtotal[];
   twDeposits: EsunDepositSnapshot[];
   frDeposits: EsunDepositSnapshot[];
+}
+
+export interface EsunCardBillSubtotal {
+  cardNo: string;
+  currency: string;
+  amount: number;
 }
 
 export interface EsunPortalApi {
@@ -112,8 +120,12 @@ interface IescCardBody {
   credit?: boolean;
   cursor?: number;
   transList?: IescMonth[];
-  cardInfoList?: Array<{ cardNo?: string }>;
+  cardInfoList?: Array<{ cardNo?: string; conversionCardNo?: string }>;
   lastBillYearMonth?: string | number;
+  filterDetailList?: Array<{
+    filterCurrency?: string;
+    filterAmount?: number | string | null;
+  }>;
 }
 
 interface DepositAccountRef {
@@ -238,6 +250,9 @@ export async function collectEsunSnapshot(
     ? await api.postIesc("creditBill/getSummaryResult", { billPeriod })
     : null;
   if (billSummary) assertIescOk(billSummary, "bill");
+  const cardBillSubtotals = billPeriod
+    ? await loadCardBillSubtotals(api, billPeriod)
+    : [];
 
   let cardOverview: unknown = null;
   try {
@@ -261,8 +276,52 @@ export async function collectEsunSnapshot(
     creditHistory,
     billSummary,
     billPeriod,
+    cardBillSubtotals,
     ...(await loadAllDeposits(api)),
   };
+}
+
+/**
+ * `creditBill/getDetailResult` 列出帳單內的卡片，`getFilterResult` 依
+ * `conversionCardNo` 回傳該卡本期小計。只作為分卡顯示，讀取失敗時略過，不影響卡戶應繳。
+ */
+async function loadCardBillSubtotals(
+  api: EsunPortalApi,
+  billPeriod: string,
+): Promise<EsunCardBillSubtotal[]> {
+  try {
+    const detail = iescData(
+      await api.postIesc("creditBill/getDetailResult", { billPeriod }),
+    );
+    const subtotals: EsunCardBillSubtotal[] = [];
+    for (const card of detail?.cardInfoList ?? []) {
+      if (!card.cardNo || !card.conversionCardNo) continue;
+      const raw = await api.postIesc("creditBill/getFilterResult", {
+        billPeriod,
+        conversionCardNo: card.conversionCardNo,
+      });
+      assertIescOk(raw, "bill-card");
+      const body = iescData(raw);
+      for (const item of body?.filterDetailList ?? []) {
+        const amount = numberOrUndefined(item.filterAmount);
+        if (amount === undefined || !item.filterCurrency) continue;
+        subtotals.push({
+          cardNo: card.cardNo,
+          currency: item.filterCurrency,
+          amount,
+        });
+      }
+    }
+    return subtotals;
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        event: "esun_card_bill_subtotals_unavailable",
+        errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+      }),
+    );
+    return [];
+  }
 }
 
 /** Only an explicit `credit: false` skips cards; anything else keeps the card flow. */
