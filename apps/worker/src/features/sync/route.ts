@@ -5,6 +5,7 @@ import {
   ObankProtocolError,
 } from "../../sources/obank/mobile-api";
 import { SkbankConnectionError } from "../../sources/skbank/mobile-api";
+import { DbsApiError } from "../../sources/dbs/api";
 import { SkbankProtocolError } from "../../sources/skbank/protocol";
 import {
   TdccConnectionError,
@@ -306,6 +307,15 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       c,
       withManualSyncLock(c.env, "skbank", SYNC_SCOPE_ALL, () =>
         runConnectorSync(c.env, "skbank", "manual"),
+      ),
+    );
+  });
+
+  api.post("/connectors/dbs/sync", async (c) => {
+    return syncRouteResponse(
+      c,
+      withManualSyncLock(c.env, "dbs", SYNC_SCOPE_ALL, () =>
+        runConnectorSync(c.env, "dbs", "manual"),
       ),
     );
   });
@@ -1091,6 +1101,15 @@ async function syncRouteResponse(
       return jsonError(
         "RICHART_CONNECTION_FAILED",
         safeErrorMessage(error),
+        502,
+      );
+    }
+    if (error instanceof DbsApiError) {
+      return jsonError(
+        "DBS_CONNECTION_FAILED",
+        error.kind === "not_implemented"
+          ? "星展登入流程尚未完成，暫時無法同步。"
+          : "星展連線失敗，請稍後再試。",
         502,
       );
     }

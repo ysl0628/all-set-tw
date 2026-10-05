@@ -17,6 +17,7 @@ import { hncbConfigSchema } from "./hncb/protocol";
 import { rakutenConfigSchema } from "./rakuten/protocol";
 import { kgibankConfigSchema } from "./kgibank/protocol";
 import { megabankConfigSchema } from "./megabank/protocol";
+import { dbsConfigSchema } from "./dbs/protocol";
 
 export const connectorConfigSchemas = {
   einvoice: invoiceConfigSchema,
@@ -36,6 +37,7 @@ export const connectorConfigSchemas = {
   megabank: megabankConfigSchema,
   hsbc: hsbcConfigSchema,
   richart: richartConfigSchema,
+  dbs: dbsConfigSchema,
 } satisfies Record<ConnectorId, z.ZodTypeAny>;
 
 export function parseConnectorConfig(

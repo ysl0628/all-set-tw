@@ -18,6 +18,7 @@ const CONNECTOR_BANK_CODES: Record<string, string> = {
   rakuten: "826",
   hsbc: "081",
   richart: "812",
+  dbs: "810",
 };
 
 export interface InstitutionAssetGroup {

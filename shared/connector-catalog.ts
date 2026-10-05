@@ -431,6 +431,18 @@ export const connectorCatalog = {
       "captchaExpiresAt",
     ],
   },
+  dbs: {
+    id: "dbs",
+    title: "星展銀行",
+    description: "臺外幣活存帳戶、餘額、交易明細與信用卡應繳",
+    connectionMode: "api_credentials",
+    scopes: ["all"],
+    capabilities: ["bank_account", "bank_balance_snapshot", "bank_transaction"],
+    publicFields: [],
+    credentialFields: ["account", "password"],
+    secretStateFields: [],
+    resetOnCredentialChangeFields: [],
+  },
 } as const satisfies Record<string, ConnectorCatalogEntry>;
 
 export type ConnectorId = keyof typeof connectorCatalog;
