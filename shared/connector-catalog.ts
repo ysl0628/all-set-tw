@@ -411,6 +411,26 @@ export const connectorCatalog = {
       "captchaExpiresAt",
     ],
   },
+  richart: {
+    id: "richart",
+    title: "Richart",
+    description: "台幣活存、子帳戶罐子、台幣定存與交易明細",
+    connectionMode: "api_captcha_session",
+    scopes: ["all"],
+    capabilities: ["bank_account", "bank_balance_snapshot", "bank_transaction"],
+    publicFields: [],
+    credentialFields: ["userId", "account", "password"],
+    secretStateFields: [
+      "captchaSessionId",
+      "captchaCookies",
+      "captchaExpiresAt",
+    ],
+    resetOnCredentialChangeFields: [
+      "captchaSessionId",
+      "captchaCookies",
+      "captchaExpiresAt",
+    ],
+  },
 } as const satisfies Record<string, ConnectorCatalogEntry>;
 
 export type ConnectorId = keyof typeof connectorCatalog;

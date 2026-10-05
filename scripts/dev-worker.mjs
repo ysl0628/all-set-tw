@@ -97,6 +97,7 @@ const wrangler = spawn(
       XDG_CONFIG_HOME: path.join(projectRoot, ".wrangler-config"),
     },
     stdio: "inherit",
+    shell: process.platform === "win32",
   },
 );
 

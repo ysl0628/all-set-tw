@@ -18,6 +18,10 @@ import {
   MegabankVerificationRequiredError,
 } from "../../sources/megabank/mobile-api";
 import { HsbcApiError } from "../../sources/hsbc/api";
+import {
+  RICHART_CAPTCHA_PATTERN,
+  RichartApiError,
+} from "../../sources/richart/api";
 import { zValidator } from "@hono/zod-validator";
 import { type Context, type Hono } from "hono";
 import { z } from "zod";
@@ -140,6 +144,10 @@ const hsbcSyncBodySchema = z.object({
     .string()
     .regex(/^[A-Za-z0-9]{4,8}$/)
     .optional(),
+});
+
+const richartSyncBodySchema = z.object({
+  captcha: z.string().regex(RICHART_CAPTCHA_PATTERN).optional(),
 });
 
 const cathaySyncBodySchema = z.object({
@@ -806,6 +814,55 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       );
     },
   );
+
+  api.post("/connectors/richart/captcha", async (c) => {
+    try {
+      return c.json(await prepareConnectorChallenge(c.env, "richart"));
+    } catch (error) {
+      if (error instanceof SyncAlreadyRunningError) {
+        return jsonError(
+          "SYNC_ALREADY_RUNNING",
+          "Richart 已有驗證或同步作業正在進行。",
+          409,
+        );
+      }
+      if (error instanceof NeedsUserActionError) {
+        return jsonError("USER_ACTION_REQUIRED", error.message, 400);
+      }
+      if (error instanceof RichartApiError) {
+        return jsonError(
+          "RICHART_CONNECTION_FAILED",
+          safeErrorMessage(error),
+          502,
+        );
+      }
+      return jsonError("RICHART_CAPTCHA_FAILED", safeErrorMessage(error), 502);
+    }
+  });
+
+  api.post(
+    "/connectors/richart/sync",
+    zValidator(
+      "json",
+      richartSyncBodySchema,
+      validationHook("INVALID_REQUEST", "Richart 檢核碼須為 4-5 位數字。"),
+    ),
+    async (c) => {
+      const overrides = c.req.valid("json");
+      return syncRouteResponse(
+        c,
+        withManualSyncLock(c.env, "richart", SYNC_SCOPE_ALL, () =>
+          runConnectorSync(
+            c.env,
+            "richart",
+            "manual",
+            SYNC_SCOPE_ALL,
+            overrides,
+          ),
+        ),
+      );
+    },
+  );
 }
 
 async function queuedTdccSyncResponse(
@@ -1029,6 +1086,13 @@ async function syncRouteResponse(
     }
     if (error instanceof HsbcApiError) {
       return jsonError("HSBC_CONNECTION_FAILED", safeErrorMessage(error), 502);
+    }
+    if (error instanceof RichartApiError) {
+      return jsonError(
+        "RICHART_CONNECTION_FAILED",
+        safeErrorMessage(error),
+        502,
+      );
     }
     return jsonError("SYNC_FAILED", safeErrorMessage(error), 500);
   }

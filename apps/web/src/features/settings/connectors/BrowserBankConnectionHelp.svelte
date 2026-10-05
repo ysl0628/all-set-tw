@@ -8,6 +8,7 @@
     captchaImage,
     captcha = $bindable(),
     digitCount,
+    minDigitCount = digitCount,
     captchaKind = "numeric",
     preparing,
     verifying,
@@ -26,10 +27,13 @@
       | "兆豐"
       | "將來"
       | "樂天"
-      | "匯豐";
+      | "匯豐"
+      | "Richart";
     captchaImage: string;
     captcha?: string;
     digitCount: number;
+    /** 銀行動態決定位數時的最小位數；未提供時與 `digitCount` 相同。 */
+    minDigitCount?: number;
     captchaKind?: "numeric" | "alphanumeric";
     preparing: boolean;
     verifying: boolean;
@@ -40,6 +44,11 @@
   } = $props();
 
   const expired = $derived(expiresIn !== undefined && expiresIn <= 0);
+  const digitCountLabel = $derived(
+    minDigitCount === digitCount
+      ? `${digitCount}`
+      : `${minDigitCount}-${digitCount}`,
+  );
   const operationPending = $derived(preparing || verifying || syncing);
 </script>
 
@@ -47,7 +56,7 @@
   {#if captchaImage}
     <div class="mt-3 rounded-md border border-ink/10 bg-paper p-3">
       <p class="text-sm font-medium text-ink/80">
-        請輸入圖片中的 {digitCount} 位{captchaKind === "alphanumeric"
+        請輸入圖片中的 {digitCountLabel} 位{captchaKind === "alphanumeric"
           ? "英數字"
           : "數字"}，{expiresIn === undefined
           ? "驗證碼約兩分鐘內有效。"
@@ -65,7 +74,7 @@
           class="min-w-40 flex-1"
           inputmode={captchaKind === "alphanumeric" ? "text" : "numeric"}
           maxlength={digitCount}
-          placeholder={`${digitCount} 位${captchaKind === "alphanumeric" ? "英數字" : "數字"}驗證碼`}
+          placeholder={`${digitCountLabel} 位${captchaKind === "alphanumeric" ? "英數字" : "數字"}驗證碼`}
           bind:value={captcha}
         />
         <Button
@@ -136,6 +145,20 @@
       </li>
       <li>
         若自動辨識失敗，可取得圖片後改用人工輸入；帳密被拒絕時會立即停止、不會重試。
+      </li>
+      <li>首次成功同步後會自動開啟排程；若手動關閉，後續同步會保留此選擇。</li>
+    {:else if bankName === "Richart"}
+      <li>
+        請填寫 Richart
+        網銀（richart.tw）的身分證字號、使用者代號與使用者密碼；目前同步台幣活存、子帳戶罐子與台幣定存。
+      </li>
+      <li>
+        系統透過 Richart 網銀 API 讀取資料，每次同步都重新登入並自動辨識 4
+        位數字檢核碼，最多嘗試三張。
+      </li>
+      <li>
+        若帳號正在 App
+        或其他瀏覽器登入中，同步會停止而不會把對方登出；請先登出後再同步。
       </li>
       <li>首次成功同步後會自動開啟排程；若手動關閉，後續同步會保留此選擇。</li>
     {:else}

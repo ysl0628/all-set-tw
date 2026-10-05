@@ -79,6 +79,34 @@ describe("connector state boundaries", () => {
     ).toBeNull();
   });
 
+  it("keeps Richart CAPTCHA sessions out of the cursor and public config", () => {
+    expect(
+      splitConnectorCursorState(
+        "richart",
+        JSON.stringify({
+          captchaSessionId: "CMPLogin_synthetic",
+          captchaCookies: { JSESSIONID: "synthetic" },
+          captchaExpiresAt: 1_790_000_000_000,
+          syncedAt: "2026-10-04T08:01:00.000Z",
+        }),
+      ),
+    ).toEqual({
+      safeCursor: JSON.stringify({ syncedAt: "2026-10-04T08:01:00.000Z" }),
+      secretState: {
+        captchaSessionId: "CMPLogin_synthetic",
+        captchaCookies: { JSESSIONID: "synthetic" },
+        captchaExpiresAt: 1_790_000_000_000,
+      },
+    });
+    expect(
+      serializePublicConnectorConfig("richart", {
+        userId: "A123456789",
+        account: "demo1234",
+        captchaCookies: { JSESSIONID: "synthetic" },
+      }),
+    ).toBeNull();
+  });
+
   it("keeps TDCC trade watermarks while encrypting device session state", () => {
     expect(
       splitConnectorCursorState(

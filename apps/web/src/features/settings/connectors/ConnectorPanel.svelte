@@ -86,6 +86,7 @@
   let bankCaptchaImage = $state("");
   let bankCaptcha = $state("");
   let bankCaptchaDigitCount = $state(6);
+  let bankCaptchaMinDigitCount = $state(6);
   let bankCaptchaKind = $state<"numeric" | "alphanumeric">("numeric");
   let megabankOtpStep = $state(false);
   let megabankOtpMessage = $state("");
@@ -120,7 +121,8 @@
       connectorId === "rakuten" ||
       connectorId === "kgibank" ||
       connectorId === "megabank" ||
-      connectorId === "hsbc",
+      connectorId === "hsbc" ||
+      connectorId === "richart",
   );
   const browserBankSessionAvailable = $derived(
     browserBank && Boolean($settings.data?.sessionAvailable),
@@ -392,6 +394,7 @@
         expiresAt: string;
         digitCount?: number;
         captchaLength?: number;
+        captchaMinLength?: number;
         captchaKind?: "numeric" | "alphanumeric";
       }>(`/api/connectors/${connectorId}/captcha`);
     },
@@ -409,6 +412,7 @@
         Math.ceil((bankCaptchaExpiresAt - Date.now()) / 1000),
       );
       bankCaptchaDigitCount = data.captchaLength ?? data.digitCount ?? 6;
+      bankCaptchaMinDigitCount = data.captchaMinLength ?? bankCaptchaDigitCount;
       bankCaptchaKind = data.captchaKind ?? "numeric";
     },
     onError: (e) => (error = e instanceof Error ? e.message : "取得驗證碼失敗"),
@@ -425,11 +429,15 @@
         throw new Error("驗證碼已過期，請重新取得圖片。");
       const pattern =
         bankCaptchaKind === "alphanumeric"
-          ? new RegExp(`^[A-Za-z0-9]{${bankCaptchaDigitCount}}$`)
-          : new RegExp(`^\\d{${bankCaptchaDigitCount}}$`);
+          ? new RegExp(
+              `^[A-Za-z0-9]{${bankCaptchaMinDigitCount},${bankCaptchaDigitCount}}$`,
+            )
+          : new RegExp(
+              `^\\d{${bankCaptchaMinDigitCount},${bankCaptchaDigitCount}}$`,
+            );
       if (!pattern.test(bankCaptcha.trim()))
         throw new Error(
-          `請輸入圖片中的 ${bankCaptchaDigitCount} 位${bankCaptchaKind === "alphanumeric" ? "英數字" : "數字"}驗證碼。`,
+          `請輸入圖片中的 ${bankCaptchaMinDigitCount === bankCaptchaDigitCount ? bankCaptchaDigitCount : `${bankCaptchaMinDigitCount}-${bankCaptchaDigitCount}`} 位${bankCaptchaKind === "alphanumeric" ? "英數字" : "數字"}驗證碼。`,
         );
       bankVerificationSubmitted = true;
       return api.post(`/api/connectors/${connectorId}/sync`, {
@@ -1179,10 +1187,13 @@
                       ? "樂天"
                       : connectorId === "hsbc"
                         ? "匯豐"
-                        : "永豐"}
+                        : connectorId === "richart"
+                          ? "Richart"
+                          : "永豐"}
       bind:captcha={bankCaptcha}
       captchaImage={bankCaptchaImage}
       digitCount={bankCaptchaDigitCount}
+      minDigitCount={bankCaptchaMinDigitCount}
       captchaKind={bankCaptchaKind}
       preparing={$prepareBrowserBank.isPending}
       verifying={$verifyBrowserBank.isPending}
@@ -1752,6 +1763,8 @@
                       ? "樂天網銀驗證碼會先以 Workers AI 自動辨識，失敗時改由人工輸入；每次同步都重新登入，結束時登出，不保留 session。"
                       : connectorId === "hsbc"
                         ? "匯豐同步使用信用卡網路服務（card.hsbc.com.tw）的 API，以帳密登入並由 Workers AI 辨識英數驗證碼，失敗時改由人工輸入；每次同步都重新登入，結束時登出。"
-                        : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}
+                        : connectorId === "richart"
+                          ? "Richart 同步直接使用網銀 API，以身分證字號與帳密登入並由 Workers AI 辨識 4-5 位數字檢核碼，失敗時改由人工輸入；每次同步都重新登入，結束時登出。"
+                          : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}
   </p>
 </Card>

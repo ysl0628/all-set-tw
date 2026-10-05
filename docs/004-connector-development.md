@@ -22,14 +22,14 @@ Connector 採三層 registry：
 
 新增 connector 前先選擇最接近的連接模式：
 
-| Mode                      | 適用情境                                                 | 現有範例                         |
-| ------------------------- | -------------------------------------------------------- | -------------------------------- |
-| `api_credentials`         | 帳密登入外部 API，可自行更新 token                       | 電子發票、中信、新光             |
-| `api_captcha_session`     | App API 登入含 CAPTCHA，challenge 僅短暫加密保存         | 王道、兆豐銀行、將來、匯豐       |
-| `api_device_otp`          | API 登入，首次裝置需要 OTP                               | 集保 e 存摺                      |
-| `browser_per_sync`        | 每次同步都必須以 Browser 登入與擷取                      | 國泰世華                         |
-| `browser_session`         | Browser 只負責登入，後續使用可復用的 HTTP session        | 玉山                             |
-| `browser_captcha_session` | Browser 登入含 CAPTCHA，可由 AI 或人工完成並復用 session | 永豐、台新、華南、第一銀行、凱基 |
+| Mode                      | 適用情境                                                 | 現有範例                            |
+| ------------------------- | -------------------------------------------------------- | ----------------------------------- |
+| `api_credentials`         | 帳密登入外部 API，可自行更新 token                       | 電子發票、中信、新光                |
+| `api_captcha_session`     | App API 登入含 CAPTCHA，challenge 僅短暫加密保存         | 王道、兆豐銀行、將來、匯豐、Richart |
+| `api_device_otp`          | API 登入，首次裝置需要 OTP                               | 集保 e 存摺                         |
+| `browser_per_sync`        | 每次同步都必須以 Browser 登入與擷取                      | 國泰世華                            |
+| `browser_session`         | Browser 只負責登入，後續使用可復用的 HTTP session        | 玉山                                |
+| `browser_captcha_session` | Browser 登入含 CAPTCHA，可由 AI 或人工完成並復用 session | 永豐、台新、華南、第一銀行、凱基    |
 
 不要為單一銀行建立新的通用框架。只有登入生命週期真的不同時才新增 mode，並同時補上 catalog 說明；新增核心風險時才擴充共同測試。
 
@@ -485,3 +485,40 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 - 外部 API 失敗時只記錄 `hsbc_api_error` 的操作名稱、錯誤類型、HTTP status 與符合
   `[A-Za-z0-9_.-]` 白名單的短銀行錯誤代碼；
   不記錄 endpoint 中的卡片識別值、銀行回應、帳密、Cookie 或 Token。
+
+### Richart
+
+Richart 是台新銀行的數位帳戶，與只同步信用卡的 `taishin` 分開成獨立 connector。直接呼叫
+Richart 網銀（`richart.tw/WebBank`）Angular 前端使用的內部 API（`/TSDIB_RWB_restful`），
+不使用 Browser Rendering。端點、欄位名稱與錯誤分流取自 2026-10-04 公開的網銀 bundle，
+尚未以真實登入回應驗證，取得去識別化的回應前，解析測試使用合成 fixture。
+
+- 登入依官方網銀順序：`POST /SecurityCodeService/getSecurityCode` 取得 4～5 位數字檢核碼圖片（位數每次由銀行動態決定）與
+  `fakeSessionId`（同時發出 `JSESSIONID`），`POST /E2EService/NoSecurity/E2EInit` 交換 P-256
+  公鑰，`POST /AuthService/isRepeated`，最後 `POST /AuthService/login`。所有 API 的 HTTP status
+  都是 200，以 `stat: "ok" | "error"` 判斷成功。登出為 `GET /AuthService/logout`。
+- `isRepeated` 與 `login` 的 body 欄位名稱依官方 `callIsRepeated`／`callLogin` 實際送出的格式：
+  `pid`、`userName`、`userMac`、`password`、`mac`、`sessionId`；檢核碼（`securityCodeSessionId`、
+  `securityCode`）只在 `isRepeated` 送出。官方元件內部的 `identity`、`encodeUserName`、`pwd`
+  只是送出前的變數名，直接送出會得到 `SYS05001`。
+- 使用者代號與密碼以 `e2ee.ts` 加密：用戶端金鑰直接與伺服器公鑰做 ECDH，
+  `SHA-512(sharedX || 00000001)` 前半為 AES-256-CBC 金鑰、後半為 HMAC-SHA256 金鑰，IV 取 MAC
+  金鑰前 16 bytes；使用者代號會先對調前後半。測試向量由官方 `e2eeclient.js` 以合成金鑰產生。
+- 檢核碼圖片宣告為 PNG，實際為 JPEG，依檔頭判斷 content type 後交給 Workers AI。每次取新檢核碼，
+  只有檢核碼錯誤才重試，最多三張；`AUTH08026`～`AUTH08029` 是使用者代號或密碼錯誤，立即停止。
+  銀行沒有檢核碼錯誤代碼，依訊息含「驗證碼有誤」「檢核碼」判斷；其他未知的登入錯誤也視為帳密錯誤，
+  避免重試累積錯誤次數。人工流程把 `fakeSessionId`、`JSESSIONID` 等 cookie 與兩分鐘期限加密保存，
+  提交時先消耗。
+- `isRepeated` 回傳 `true` 代表帳號在其他地方登入中。官方網銀會詢問是否強制登出對方；connector
+  手動與排程都不強制，直接標記 `needs_user_action`。
+- 資料端點：`getSavingAccount`（`account`、`balance`、`balanceAvailable`）、`getNewTransaction` 與
+  `getTransaction {month, type: 2}`（`month` 是往前回溯的月數，查 1～3），`getSubAccount`
+  （`subAccountOverview.totalAmount`）與 `getNtDepositOverviewForWebBank`
+  （`depositList`、`ntSumAmount`）。罐子與定存目前各以一個彙總帳戶呈現；外幣帳戶與外幣定存尚未接入。
+  官方介面把罐子與活存分開顯示，未見加總，因此視為不重疊的兩筆餘額，仍待真實資料確認。
+- 交易 `amount` 帶正負號，官方介面以小於 0 判斷支出，直接沿用。最新交易與各月份回應可能重疊，
+  `sourceId` 由帳戶、日期、金額、說明與流水餘額雜湊，同頁相同交易以出現次序區分，跨頁取最大出現次數。
+- 罐子或定存帳戶消失時，比照將來銀行寫入零餘額快照並標記 `inactive_at`。
+  主帳戶以 `bank:richart:<末四碼>:<雜湊>:TWD` 為 sourceId，銀行代碼 812，可與集保交割帳戶配對。
+- 外部 API 失敗時只記錄 `richart_api_error` 的操作名稱、錯誤類型與白名單格式的銀行錯誤代碼，
+  不記錄銀行訊息、帳密或 cookie。
