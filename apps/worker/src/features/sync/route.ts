@@ -1107,8 +1107,8 @@ async function syncRouteResponse(
     if (error instanceof DbsApiError) {
       return jsonError(
         "DBS_CONNECTION_FAILED",
-        error.kind === "not_implemented"
-          ? "星展登入流程尚未完成，暫時無法同步。"
+        error.kind === "protocol"
+          ? "星展網銀回應格式不符，請稍後再試。"
           : "星展連線失敗，請稍後再試。",
         502,
       );

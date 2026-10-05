@@ -11,12 +11,7 @@ const MAX_PAGES_PER_MONTH = 20;
 const COUNT_PER_PAGE = 20;
 
 export type DbsErrorKind =
-  | "not_implemented"
-  | "credentials"
-  | "locked"
-  | "duplicate_session"
-  | "connection"
-  | "protocol";
+  "credentials" | "locked" | "duplicate_session" | "connection" | "protocol";
 
 export class DbsApiError extends Error {
   constructor(
@@ -58,11 +53,6 @@ export interface DbsSession {
  * 不得重試、不得觸發簡訊 OTP。
  */
 export type DbsLogin = (credentials: DbsCredentials) => Promise<DbsSession>;
-
-/** 登入流程尚未實作；同步會回報連線失敗而不寫入任何資料。 */
-export const loginDbs: DbsLogin = async () => {
-  throw new DbsApiError("not_implemented", "login");
-};
 
 /** 登入後在任何資料寫入前，取得一份完整、有上限的唯讀快照。 */
 export async function collectDbsPayloads(

@@ -448,6 +448,21 @@
   );
   const cashFlowMonths = recentMonthKeys(6, activityMonthAnchor);
   const months = [...cashFlowMonths].reverse();
+  // 從資產頁指定機構時，當月沒有該機構活動就跳到最近有活動的月份；
+  // 每次指定只調整一次，之後尊重使用者選的月份。
+  let institutionMonthApplied: ActivityInstitutionFilter | null = null;
+  $effect(() => {
+    if (!institution || searching || institutionMonthApplied === institution)
+      return;
+    if ($bank.isPending) return;
+    institutionMonthApplied = institution;
+    const monthsWithItems = rawItems
+      .map((item) => activityDateKey(item).slice(0, 7))
+      .filter((month) => cashFlowMonths.includes(month));
+    if (monthsWithItems.length === 0 || monthsWithItems.includes(selectedMonth))
+      return;
+    chooseMonth(monthsWithItems.sort().at(-1)!);
+  });
   const monthlyCalculatedItems = $derived(
     rawItems.filter(
       (item) =>

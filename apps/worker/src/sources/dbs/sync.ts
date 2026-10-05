@@ -23,10 +23,10 @@ import {
 import {
   collectDbsPayloads,
   DbsApiError,
-  loginDbs,
   type DbsLogin,
   type DbsSession,
 } from "./api";
+import { loginDbsWithFetch } from "./login";
 import {
   DbsProtocolError,
   parseDbsConfig,
@@ -41,7 +41,7 @@ import {
 export async function syncDbs(
   env: Env,
   trigger: SyncTrigger,
-  login: DbsLogin = loginDbs,
+  login: DbsLogin = loginDbsWithFetch,
 ): Promise<SyncOutcome> {
   const connectorId = "dbs";
   const scope = "all";

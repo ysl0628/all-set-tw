@@ -539,10 +539,16 @@ Richart 網銀（`richart.tw/WebBank`）Angular 前端使用的內部 API（`/TS
 `api_credentials`，只需使用者代號與密碼，不保存 token 或 session。
 
 - 網銀登入只走 1FA；簡訊 OTP 只在不同步的功能才會要求，排程與手動同步都不得觸發。
-- **登入 client 尚未實作**：`sources/dbs/api.ts` 的 `loginDbs` 目前一律拋出
-  `not_implemented`，同步回報「星展登入流程尚未完成」而不寫入資料；預設排程（`0055_dbs_sync_job.sql`）停用。
-  實作需回傳 `DbsSession`：負責 bearer token、cookie 與共用 header，登入失敗只嘗試一次，
-  並以 `credentials`、`locked`、`duplicate_session` 等 `DbsApiError` 類型回報，同步結束一律登出。
+- 登入（`sources/dbs/login.ts`）：`/iam/v2/random` 取得 `random` 與 `preAuthId`，`/iam/v1/publickey/CN2048`
+  取得 `modulus`（`exponent` 必須為 65537），以 `encryptDbsPassword` 加密後 POST
+  `/iam/v2/realms/tw/authenticate?authIndexType=service&authIndexValue=1fa`（body `{ authId: preAuthId }`，
+  header `AM-Username`、`AM-ENC-Password`、`AM-Random-Number`、`actionId: LOGIN_1FA`、`privateKeyIndex`）。
+  回應 `commCode` 再以 `/iam/v1/oauth2/realms/tw/access_token`（`oauth_client_id=mb_digibank`）換取 `access_token`；
+  資料請求帶 `Authorization: Bearer`、`channelId: DIB`、`clientId: web`、`region`、`locale` 與每次產生的
+  `correlationId`、`requestUUID`、`requestDateTime`，同步結束 POST `/iam/v1/realms/tw/sessions?_action=logout`。
+- 登入只嘗試一次，沒有 `commCode` 即停止：代碼 17、98 視為鎖定或暫停，9021 視為重複登入，其餘為帳密錯誤，
+  皆標記需要使用者處理；不保存銀行訊息原文、token 或 cookie。網銀前端另有的裝置相關 header 未實作，
+  若銀行因此拒絕登入，會以登入失敗回報而不重試。預設排程（`0055_dbs_sync_job.sql`）停用，首次手動同步成功後啟用。
 - 資料欄位依使用者錄製的去識別化 HAR 確認：
   - `dashboard/channels/customerFinancialOverview/assets`（`actionId: DASHBOARD-ASSET`、x-version 3.0.0）的
     `casa.accounts`。`multiCurrencyAccountFlag` 為 true 的外幣總戶沒有幣別與餘額，略過；各幣別子帳戶各為一個帳戶。
@@ -556,4 +562,5 @@ Richart 網銀（`richart.tw/WebBank`）Angular 前端使用的內部 API（`/TS
   - 分頁依 `pageInfo.nextCursor` 續查，每月最多 20 頁；目前錄到的月份都只有一頁，續頁請求格式尚待確認。
   - 信用卡 `liabilities` 的 `paymentDetails` 是整個卡戶一筆應繳，以單一 `credit:dbs:main` 帳戶表示，
     餘額為已出帳應繳減已繳，不含未出帳消費。
+  - 信用卡刷卡明細與未出帳金額不支援：網銀的信用卡明細頁要求以星展 App 登入驗證，連接器不處理 App 驗證。
   - 定存：總覽只有定存帳號而無金額，HAR 未錄到定存頁；未接入，避免以 0 低估資產。
