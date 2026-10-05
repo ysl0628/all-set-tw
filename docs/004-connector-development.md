@@ -244,6 +244,10 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 `credit:esun:main` 摘要帳戶，個別卡片帳戶保留各自交易但沒有餘額。銀行 API 回應以
 `balanceAccountId` 指向摘要帳戶（摘要帳戶也沒有餘額時不標記），前端據此顯示「已併入卡戶」，
 不把這些卡片視為負債資料不完整。
+多卡時另讀 `creditBill/getDetailResult` 的 `cardInfoList`，再以各卡 `conversionCardNo` 呼叫
+`creditBill/getFilterResult` 取得該卡本期消費小計（`filterDetailList`），寫成分卡帳單
+`credit:esun:<末四碼>:bill:<帳期>:<幣別>`：只有 `statementAmount`，繳款狀態與期限沿用卡戶，不帶最低應繳。
+各卡小計加上回饋、折抵等卡戶層級調整才等於卡戶應繳，因此負債仍只看摘要帳戶。小計讀取失敗時只略過分卡帳單。
 即時授權與之後入帳必須沿用原本的消費日期、商店、金額與卡片組成 `sourceId`，
 授權時間只補在 `authorizedAt`。每筆卡片交易的 `raw.esunFeed` 標記來源為
 `realtime` 或 `history`；同名的即時紀錄併入明細並補上時間，不另產生流水號。
@@ -261,6 +265,8 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 登入公告清單的按鈕依序顯示「下一則」，最後一則才是「我知道了」。同步逐則點選已知動作，僅在最後確認彈窗關閉；未知動作不點擊，最多處理二十則，避免公告循環或誤觸其他功能。此流程沿用既有登入入口，不變更 OTP、信任裝置或資料查詢。
 
 登入頁的 `NormalDataCheck()` 仍依賴全域 jQuery `$`。Browser Rendering 在送出前必須確認 `$` 已可用；若銀行頁宣告的 jQuery 載入失敗，只能重新載入該頁同源 script 並補上 `jQuery` 的 `$` alias，不得注入第三方 CDN。仍無法初始化時停止登入，避免把載入問題誤判成帳密錯誤。
+
+外幣活存在臺幣存款之後讀取：進入外幣存款總覽（`FAcctInq/R0101_FDepInq`），在頁內以 `GetJWT` 取得的 token 呼叫 `ClientForeign/R_ACCT_Q_OverView` 與各幣別的 `R_ACCT_Q_TransferDetail`（一次最多一年）。每個帳號的每個幣別是一個帳戶，sourceId 為 `bank:cathaybk:<帳號>:<幣別>`；交易金額為正值，方向依 `debitCreditType`（`Debit` 支出、`Credit` 存入；目前只在真實資料看過 `Credit`）。外幣讀取或格式失敗時只略過外幣並記錄 `cathaybk_foreign_failed`，不影響臺幣與信用卡。外幣定存（`depositAccounts`）的格式尚未確認，未接入。
 
 信用卡總覽偵測不到卡號時，必須有明確無卡提示，或具備信用卡總覽與「立即線上辦卡」的無卡頁面內容，才回傳空的信用卡資料。空白、維護或無法辨識的頁面使同步失敗，不能僅因缺少卡號就當成無卡。
 

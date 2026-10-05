@@ -5,6 +5,7 @@ import {
   type EsunSnapshot,
 } from "../../../src/sources/esun/portal";
 import {
+  esunCardSubtotalBills,
   normalizeEsunTimelineTransactions,
   type EsunTimelinePage,
   type EsunTimelineTransaction,
@@ -165,5 +166,70 @@ describe("E.SUN credit card timeline normalization", () => {
     expect(rows.map((row) => row.amount).sort((a, b) => a - b)).toEqual([
       -199, 199,
     ]);
+  });
+});
+
+describe("E.SUN multi-card bill subtotals", () => {
+  // 卡號與金額為合成值。
+  const balances = {
+    billingPeriod: "2026-08",
+    paymentDueDate: "2026-10-01",
+    isPaid: true,
+  };
+  const accountIds = new Set([
+    "credit:esun:main",
+    "credit:esun:1111",
+    "credit:esun:2222",
+  ]);
+
+  it("records each card subtotal on that card only", () => {
+    const bills = esunCardSubtotalBills(
+      [
+        { cardNo: "**** 1111", currency: "TWD", amount: 8000 },
+        { cardNo: "**** 2222", currency: "TWD", amount: 1500 },
+      ],
+      balances,
+      accountIds,
+    );
+    expect(
+      bills.map(({ accountId, sourceId, statementAmount, isPaid }) => ({
+        accountId,
+        sourceId,
+        statementAmount,
+        isPaid,
+      })),
+    ).toEqual([
+      {
+        accountId: "credit:esun:1111",
+        sourceId: "credit:esun:1111:bill:2026-08:TWD",
+        statementAmount: 8000,
+        isPaid: true,
+      },
+      {
+        accountId: "credit:esun:2222",
+        sourceId: "credit:esun:2222:bill:2026-08:TWD",
+        statementAmount: 1500,
+        isPaid: true,
+      },
+    ]);
+    // 分卡帳單不帶最低應繳，避免與卡戶帳單重複計算應繳。
+    expect(bills.every((bill) => bill.minimumPayment === undefined)).toBe(true);
+  });
+
+  it("skips cards outside this sync and requires a billing period", () => {
+    expect(
+      esunCardSubtotalBills(
+        [{ cardNo: "**** 9999", currency: "TWD", amount: 100 }],
+        balances,
+        accountIds,
+      ),
+    ).toEqual([]);
+    expect(
+      esunCardSubtotalBills(
+        [{ cardNo: "**** 1111", currency: "TWD", amount: 100 }],
+        { ...balances, billingPeriod: undefined },
+        accountIds,
+      ),
+    ).toEqual([]);
   });
 });

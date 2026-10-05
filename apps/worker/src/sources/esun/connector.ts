@@ -526,6 +526,15 @@ async function scrapeCreditCards(client: EsunHttpClient): Promise<Scraped> {
         },
       ]
     : [];
+  if (balanceAccountId === mainSourceId && balances.billingPeriod) {
+    creditCardBills.push(
+      ...esunCardSubtotalBills(
+        snapshot.cardBillSubtotals ?? [],
+        balances,
+        accountIds,
+      ),
+    );
+  }
 
   return {
     bankAccounts,
@@ -533,6 +542,41 @@ async function scrapeCreditCards(client: EsunHttpClient): Promise<Scraped> {
     bankTransactions,
     creditCardBills,
   };
+}
+
+/**
+ * 多卡卡戶的分卡帳單：只記本期消費小計，應繳、最低應繳與負債仍在
+ * `credit:esun:main`。繳款狀態與期限沿用卡戶帳單，因為兩張卡一起繳。
+ */
+export function esunCardSubtotalBills(
+  subtotals: Array<{ cardNo: string; currency: string; amount: number }>,
+  balances: {
+    billingPeriod?: string;
+    paymentDueDate?: string;
+    statementClosingDate?: string;
+    isPaid?: boolean;
+  },
+  accountIds: ReadonlySet<string>,
+): Scraped["creditCardBills"] {
+  if (!balances.billingPeriod) return [];
+  return subtotals.flatMap((subtotal) => {
+    const accountId = creditCardSourceId(subtotal.cardNo);
+    if (accountId === "credit:esun:main" || !accountIds.has(accountId)) {
+      return [];
+    }
+    return [
+      {
+        accountId,
+        sourceId: `${accountId}:bill:${balances.billingPeriod}:${subtotal.currency}`,
+        billingPeriod: balances.billingPeriod!,
+        statementAmount: subtotal.amount,
+        isPaid: balances.isPaid,
+        paymentDueDate: balances.paymentDueDate,
+        statementClosingDate: balances.statementClosingDate,
+        currency: subtotal.currency,
+      },
+    ];
+  });
 }
 
 function requiredSnapshot(client: EsunHttpClient) {
