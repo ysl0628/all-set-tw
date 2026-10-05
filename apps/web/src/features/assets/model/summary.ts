@@ -45,6 +45,11 @@ export interface AssetSummary {
   missingCurrencies: string[];
 }
 
+/** 餘額由同卡戶另一帳戶承載的卡片（如玉山多卡）不算缺少負債資料。 */
+function hasUnknownCardBalance(card: BankAccountRow) {
+  return card.balance == null && !card.balanceAccountId;
+}
+
 function institutionKey(account: BankAccountRow) {
   const bankCode =
     account.bankCode ?? CONNECTOR_BANK_CODES[account.connectorId];
@@ -150,7 +155,7 @@ export function calculateAssetSummary({
           (sum, account) => sum + toTwd(account.balance ?? 0, account.currency),
           0,
         ),
-        hasUnknownCardBalance: cards.some((card) => card.balance == null),
+        hasUnknownCardBalance: cards.some(hasUnknownCardBalance),
         debtTotalTwd: cards.reduce(
           (sum, account) => sum - toTwd(account.balance ?? 0, account.currency),
           0,
@@ -178,7 +183,7 @@ export function calculateAssetSummary({
     investmentTotal,
     manualTotal,
     cardDebt,
-    hasUnknownCardBalance: cards.some((card) => card.balance == null),
+    hasUnknownCardBalance: cards.some(hasUnknownCardBalance),
     grossAssets,
     netWorth: grossAssets - cardDebt,
     institutionGroups,

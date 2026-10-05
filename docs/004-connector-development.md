@@ -240,6 +240,10 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 信用卡 `getCardOverview` 的 `creditCardFeePaid` 為 `true` 時，將本期帳單標為已繳；
 否則繳款狀態維持未知。已繳的正額帳單不再計入信用卡負債，仍保留未出帳消費
 與負額帳單的溢繳餘額；帳單本身保留原應繳金額。既有餘額快照於下次同步更新。
+帳單與欠款以整個卡戶計算：只有一張卡時餘額寫在該卡；持有多張卡時只寫入
+`credit:esun:main` 摘要帳戶，個別卡片帳戶保留各自交易但沒有餘額。銀行 API 回應以
+`balanceAccountId` 指向摘要帳戶（摘要帳戶也沒有餘額時不標記），前端據此顯示「已併入卡戶」，
+不把這些卡片視為負債資料不完整。
 即時授權與之後入帳必須沿用原本的消費日期、商店、金額與卡片組成 `sourceId`，
 授權時間只補在 `authorizedAt`。每筆卡片交易的 `raw.esunFeed` 標記來源為
 `realtime` 或 `history`；同名的即時紀錄併入明細並補上時間，不另產生流水號。

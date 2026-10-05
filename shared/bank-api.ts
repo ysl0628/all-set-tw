@@ -12,6 +12,8 @@ export interface BankAccountResponse {
   bankCode?: string | null;
   accountLast4?: string | null;
   balance?: number | null;
+  /** 信用卡餘額由同一卡戶的另一個帳戶承載時，該帳戶的 `id`（例如玉山多卡的摘要帳戶）。 */
+  balanceAccountId?: string | null;
   availableBalance?: number | null;
   paymentDueDate?: string | null;
   statementClosingDate?: string | null;

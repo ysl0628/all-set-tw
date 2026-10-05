@@ -2,6 +2,53 @@ import { describe, expect, it } from "vitest";
 import { calculateAssetSummary } from "./summary";
 
 describe("calculateAssetSummary", () => {
+  function esunCards(mainBalance: number | null) {
+    return calculateAssetSummary({
+      bank: {
+        accounts: [
+          {
+            id: "main",
+            sourceId: "credit:esun:main",
+            connectorId: "esun",
+            institutionName: "玉山銀行",
+            accountType: "credit",
+            balance: mainBalance,
+            currency: "TWD",
+          },
+          ...["1111", "2222"].map((last4) => ({
+            id: last4,
+            sourceId: `credit:esun:${last4}`,
+            connectorId: "esun",
+            institutionName: "玉山銀行",
+            accountType: "credit",
+            balance: null,
+            balanceAccountId: mainBalance == null ? null : "main",
+            currency: "TWD",
+          })),
+        ],
+        transactions: [],
+      },
+      investments: [],
+      manualAssets: [],
+      rates: [],
+    });
+  }
+
+  it("does not flag cards whose balance is carried by the summary account", () => {
+    const summary = esunCards(-5000);
+    expect(summary.hasUnknownCardBalance).toBe(false);
+    expect(summary.cardDebt).toBe(5000);
+    expect(summary.netWorth).toBe(-5000);
+    expect(summary.institutionGroups[0]?.hasUnknownCardBalance).toBe(false);
+    expect(summary.institutionGroups[0]?.debtTotalTwd).toBe(5000);
+  });
+
+  it("still flags missing card debt when the summary account has no balance", () => {
+    const summary = esunCards(null);
+    expect(summary.hasUnknownCardBalance).toBe(true);
+    expect(summary.institutionGroups[0]?.hasUnknownCardBalance).toBe(true);
+  });
+
   it("counts credit-card overpayments toward net worth instead of debt", () => {
     const summary = calculateAssetSummary({
       bank: {

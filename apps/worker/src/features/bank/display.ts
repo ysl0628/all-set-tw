@@ -126,6 +126,40 @@ export function normalizeBankAccountDisplay<T extends BankDisplayRow>(
   return row.accountType === "credit" ? row : normalizeDepositDisplay(row);
 }
 
+const ESUN_SUMMARY_CARD_SOURCE_ID = "credit:esun:main";
+
+/**
+ * 玉山信用卡的帳單與欠款以整個卡戶計算；持有多張卡時，餘額只寫入
+ * `credit:esun:main` 摘要帳戶，個別卡片沒有自己的餘額。為這些卡片標出
+ * 承載餘額的帳戶，避免前端誤判為缺少負債資料。摘要帳戶也沒有餘額時不標記。
+ */
+export function withSharedCardBalanceAccounts<
+  T extends {
+    id: string;
+    connectorId: string;
+    sourceId: string;
+    accountType?: string | null;
+    balance?: number | null;
+  },
+>(rows: T[]): Array<T & { balanceAccountId?: string }> {
+  const summary = rows.find(
+    (row) =>
+      row.connectorId === "esun" &&
+      row.accountType === "credit" &&
+      row.sourceId === ESUN_SUMMARY_CARD_SOURCE_ID &&
+      row.balance != null,
+  );
+  if (!summary) return rows;
+  return rows.map((row) =>
+    row.connectorId === "esun" &&
+    row.accountType === "credit" &&
+    row.id !== summary.id &&
+    row.balance == null
+      ? { ...row, balanceAccountId: summary.id }
+      : row,
+  );
+}
+
 export function normalizeBankTransactionDisplay<T extends BankDisplayRow>(
   row: T,
 ): T {

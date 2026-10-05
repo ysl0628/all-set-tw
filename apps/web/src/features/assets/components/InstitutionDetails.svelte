@@ -35,7 +35,18 @@
     return card?.accountName ?? card?.institutionName ?? "信用卡帳戶";
   }
 
+  function sharedBalanceCard(card: BankAccountRow) {
+    return card.balance == null && card.balanceAccountId
+      ? group.cards.find((candidate) => candidate.id === card.balanceAccountId)
+      : undefined;
+  }
+
   function cardPaymentLabel(card: BankAccountRow) {
+    const shared = sharedBalanceCard(card);
+    if (shared) {
+      const name = shared.accountName ?? formatBankAccountName(shared);
+      return `與「${name}」合併計算帳單`;
+    }
     if (card.balance != null && card.balance > 0) return "溢繳餘額，無需繳款";
     const latestBill = institutionBills.find(
       (bill) => bill.accountId === card.id,
@@ -176,9 +187,11 @@
               </p>
             </div>
             <p class="text-right text-sm font-medium tabular-nums text-coral">
-              {card.balance == null
-                ? "剩餘應繳金額未取得"
-                : formatCurrency(card.balance, card.currency)}
+              {card.balance != null
+                ? formatCurrency(card.balance, card.currency)
+                : sharedBalanceCard(card)
+                  ? "已併入卡戶"
+                  : "剩餘應繳金額未取得"}
             </p>
           </div>
         {/each}
