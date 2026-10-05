@@ -29,6 +29,8 @@ const CREDIT_CARD_BILL_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/CQuery/C0102_BillInq";
 
 const API_DEPOSIT_TX = "B_ACCT_Q_TransferDetail";
+const CARD_OVERVIEW_MAX_LINE = 200;
+const CARD_OVERVIEW_MAX_TEXT = 20_000;
 const OTP_SESSION_TTL_MS = 2 * 60 * 1000;
 const TRUSTED_DEVICE_NAME = "ALL SET 同步";
 const OTP_SUBMIT_LABEL_PATTERN = /驗證|確認|確定|送出|登入/;
@@ -1503,9 +1505,10 @@ export function parseCathayCardOverview(text: string) {
   const parseAmt = (s: string | undefined) =>
     parseInt((s ?? "").replace(/[^\d]/g, ""), 10) || 0;
   const last4Match = text.match(/卡片末四碼[：:]\s*(\d{4})/);
-  const cardNameMatch = text.match(
-    /([^\n]+?(?:MasterCard|VISA|JCB|銀聯)[^\n]*)/,
-  );
+  // 逐行比對卡別；整段文字上的 lazy 比對在長行時為平方時間。
+  const cardNameLine = last4Match
+    ? undefined
+    : text.split("\n").find((line) => /MasterCard|VISA|JCB|銀聯/.test(line));
   const limitMatch = text.match(/永久信用額度\s*(?:TWD\s*)?([\d,]+)/);
   const availMatch = text.match(/剩餘可用額度[\s\S]{0,20}?(?:TWD\s*)?([\d,]+)/);
   const dueDateMatch = text.match(
@@ -1524,7 +1527,7 @@ export function parseCathayCardOverview(text: string) {
     last4: last4Match?.[1] ?? "",
     cardName: last4Match
       ? `國泰信用卡 末四碼 ${last4Match[1]}`
-      : (cardNameMatch?.[1]?.trim() ?? "國泰信用卡"),
+      : cardNameLine?.trim() || "國泰信用卡",
     creditLimit: parseAmt(limitMatch?.[1]),
     availableCredit: parseAmt(availMatch?.[1]),
     unpaidAmount: noPaymentNeeded ? 0 : parseAmt(unpaidMatch?.[1]),
@@ -1548,7 +1551,18 @@ export async function scrapeCreditCards(page: Page): Promise<Scraped> {
   console.log("[cathaybk] credit card overview opened");
   await new Promise((r) => setTimeout(r, 2000));
 
-  const overviewText = await page.evaluate(() => document.body.innerText);
+  // 只把精簡後的頁面文字傳回 Worker：每行截斷、總長設上限，避免長頁面在
+  // Worker 端解析耗盡 CPU。保留行序與換行，標籤與金額跨行的比對不受影響。
+  const overviewText = await page.evaluate(
+    (maxLine: number, maxTotal: number) =>
+      document.body.innerText
+        .split("\n")
+        .map((line) => line.trim().slice(0, maxLine))
+        .join("\n")
+        .slice(0, maxTotal),
+    CARD_OVERVIEW_MAX_LINE,
+    CARD_OVERVIEW_MAX_TEXT,
+  );
   const cardOverview = parseCathayCardOverview(overviewText);
 
   console.log(
