@@ -435,7 +435,7 @@ export const connectorCatalog = {
     id: "dbs",
     title: "星展銀行",
     description: "臺外幣活存帳戶、餘額、交易明細與信用卡應繳",
-    connectionMode: "api_credentials",
+    connectionMode: "browser_per_sync",
     scopes: ["all"],
     capabilities: ["bank_account", "bank_balance_snapshot", "bank_transaction"],
     publicFields: [],

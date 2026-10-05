@@ -27,12 +27,36 @@ import {
   type DbsSession,
 } from "./api";
 import { loginDbsWithFetch } from "./login";
+import { launchBrowserWithRetry } from "../browser";
+import { openDbsBrowserFetch } from "./browser";
 import {
   DbsProtocolError,
   parseDbsConfig,
   parseDbsPayloads,
   type DbsData,
 } from "./protocol";
+
+/** 一次同步使用的登入方式與結束時的清理。 */
+export type DbsTransport = { login: DbsLogin; close(): Promise<void> };
+
+/**
+ * Worker 直接連線會被星展以 403 擋下，改由 Browser Rendering 的頁面發出請求；
+ * 登入與資料讀取的請求內容不變。
+ */
+async function openBrowserTransport(env: Env): Promise<DbsTransport> {
+  const browser = await launchBrowserWithRetry(env.BROWSER);
+  try {
+    const page = await browser.newPage();
+    const fetcher = await openDbsBrowserFetch(page);
+    return {
+      login: (credentials) => loginDbsWithFetch(credentials, fetcher),
+      close: () => browser.close(),
+    };
+  } catch (error) {
+    await browser.close().catch(() => undefined);
+    throw error;
+  }
+}
 
 /**
  * 每次同步都重新以帳密登入，讀完資料後登出；登入只嘗試一次，
@@ -41,7 +65,7 @@ import {
 export async function syncDbs(
   env: Env,
   trigger: SyncTrigger,
-  login: DbsLogin = loginDbsWithFetch,
+  openTransport: (env: Env) => Promise<DbsTransport> = openBrowserTransport,
 ): Promise<SyncOutcome> {
   const connectorId = "dbs";
   const scope = "all";
@@ -62,8 +86,10 @@ export async function syncDbs(
 
   let data: DbsData;
   let session: DbsSession | undefined;
+  let transport: DbsTransport | undefined;
   try {
-    session = await login({
+    transport = await openTransport(env);
+    session = await transport.login({
       account: config.account,
       password: config.password,
     });
@@ -80,6 +106,7 @@ export async function syncDbs(
         console.warn("[sync] dbs: logout unconfirmed");
       }
     }
+    await transport?.close().catch(() => undefined);
   }
 
   const { bankAccounts, bankBalanceSnapshots, bankTransactions } = data;
