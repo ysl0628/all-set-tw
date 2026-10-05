@@ -564,5 +564,6 @@ Richart 網銀（`richart.tw/WebBank`）Angular 前端使用的內部 API（`/TS
   - 分頁依 `pageInfo.nextCursor` 續查，每月最多 20 頁；目前錄到的月份都只有一頁，續頁請求格式尚待確認。
   - 信用卡 `liabilities` 的 `paymentDetails` 是整個卡戶一筆應繳，以單一 `credit:dbs:main` 帳戶表示，
     餘額為已出帳應繳減已繳，不含未出帳消費。
+  - 失敗時記錄 `dbs_api_error`：錯誤類型、步驟、白名單銀行代碼、HTTP 狀態與回應類型（json／html／other），不記錄回應內容。
   - 信用卡刷卡明細與未出帳金額不支援：網銀的信用卡明細頁要求以星展 App 登入驗證，連接器不處理 App 驗證。
   - 定存：總覽只有定存帳號而無金額，HAR 未錄到定存頁；未接入，避免以 0 低估資產。

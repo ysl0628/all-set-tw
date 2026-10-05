@@ -19,10 +19,29 @@ export class DbsApiError extends Error {
     readonly operation?: string,
     /** 僅保存白名單內的銀行錯誤代碼，不保存銀行訊息原文。 */
     readonly bankCode?: string,
+    /** 只記錄 HTTP 狀態與回應類型，供判斷是否被擋或回應為網頁。 */
+    readonly response?: DbsResponseInfo,
   ) {
     super(`星展 API：${kind}`);
     this.name = "DbsApiError";
   }
+}
+
+export type DbsResponseInfo = {
+  status: number;
+  contentType: "json" | "html" | "other";
+};
+
+export function dbsResponseInfo(response: Response): DbsResponseInfo {
+  const type = response.headers.get("content-type") ?? "";
+  return {
+    status: response.status,
+    contentType: /json/i.test(type)
+      ? "json"
+      : /html/i.test(type)
+        ? "html"
+        : "other",
+  };
 }
 
 export type DbsCredentials = { account: string; password: string };
