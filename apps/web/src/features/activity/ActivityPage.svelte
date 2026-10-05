@@ -34,6 +34,7 @@
   import CalculationUpdateDialog from "./components/CalculationUpdateDialog.svelte";
   import CategoryUpdateDialog from "./components/CategoryUpdateDialog.svelte";
   import type { ApiClient } from "@/shared/api/client";
+  import type { ActivityInstitutionFilter } from "@/app/types";
   import { queryKeys } from "@/shared/api/query-keys";
   import { exchangeRatesQuery } from "@/data/assets/queries";
   import { bankRangeQuery } from "@/data/bank/queries";
@@ -91,7 +92,18 @@
   } from "@/shared/format/financial";
   import { recentMonthRange, recentMonthKeys } from "@/shared/date-range";
   import { swipeBack } from "@/shared/actions/swipe-back";
-  let { api }: { api: ApiClient } = $props();
+  let {
+    api,
+    institution = null,
+    onClearInstitution,
+  }: {
+    api: ApiClient;
+    institution?: ActivityInstitutionFilter | null;
+    onClearInstitution?: () => void;
+  } = $props();
+  const institutionAccountIds = $derived(
+    institution ? new Set(institution.accountIds) : null,
+  );
   const initialSelectedMonth = currentActivityMonthKey();
   // Keep API ranges and month options anchored to the same Taipei month key.
   const activityMonthAnchor = new Date(
@@ -407,7 +419,7 @@
       $invoiceMappings.data ?? [],
     ),
   );
-  const rawItems = $derived(
+  const allItems = $derived(
     searching
       ? ($searchResults.data?.pages.flatMap((page) => page.items) ?? [])
       : buildActivityItems(
@@ -417,6 +429,15 @@
           bankAccounts,
           invoiceMatches,
         ),
+  );
+  // 由資產頁指定金融機構時，收支、圖表與列表都只計入該機構帳戶與信用卡的活動。
+  const rawItems = $derived(
+    institutionAccountIds
+      ? allItems.filter(
+          (item) =>
+            item.accountId != null && institutionAccountIds.has(item.accountId),
+        )
+      : allItems,
   );
   const detailItem = $derived(
     rawItems.find((item) => activityKey(item) === detailKey),
@@ -935,6 +956,20 @@
           disabled={activityRetryPending}
           onclick={retryActivityData}
           >{activityRetryPending ? "重試中…" : "重試活動資料"}</Button
+        >
+      </div>
+    {/if}
+    {#if institution}
+      <div
+        class="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-steel/20 bg-steel/[0.055] px-4 py-3 text-sm"
+        role="status"
+      >
+        <span class="min-w-0 break-words"
+          >只顯示 <strong>{institution.label}</strong> 的帳戶與信用卡活動</span
+        >
+        <button
+          class="min-h-8 shrink-0 px-2 text-caption font-semibold text-steel"
+          onclick={() => onClearInstitution?.()}>顯示全部</button
         >
       </div>
     {/if}

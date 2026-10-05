@@ -13,12 +13,14 @@
     billsPending = false,
     billsError = false,
     compact = false,
+    onOpenActivity,
   }: {
     group: InstitutionAssetGroup;
     bills: CreditCardBillRow[];
     billsPending?: boolean;
     billsError?: boolean;
     compact?: boolean;
+    onOpenActivity?: () => void;
   } = $props();
 
   const cardsById = $derived(
@@ -104,6 +106,16 @@
               : "—"}
         </p>
       </div>
+    </div>
+  {/if}
+
+  {#if onOpenActivity}
+    <div class={compact ? "" : "border-b border-ink/10 px-5 py-3"}>
+      <button
+        type="button"
+        class="min-h-10 text-sm font-semibold text-steel transition hover:text-steel/80"
+        onclick={onOpenActivity}>查看消費紀錄 →</button
+      >
     </div>
   {/if}
 
