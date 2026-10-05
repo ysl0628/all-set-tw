@@ -1,6 +1,7 @@
 import {
   DbsApiError,
   dbsApiPath,
+  dbsResponseInfo,
   type DbsCredentials,
   type DbsRequest,
   type DbsSession,
@@ -81,7 +82,12 @@ export async function loginDbsWithFetch(
   const randomHex = stringField(random.body, "random");
   const preAuthId = stringField(random.body, "preAuthId");
   if (!random.response.ok || !randomHex || !preAuthId) {
-    throw new DbsApiError("protocol", "random");
+    throw new DbsApiError(
+      "protocol",
+      "random",
+      undefined,
+      dbsResponseInfo(random.response),
+    );
   }
 
   const key = await send(
@@ -97,7 +103,12 @@ export async function loginDbsWithFetch(
     !modulus ||
     exponent?.replace(/^0+/, "") !== "10001"
   ) {
-    throw new DbsApiError("protocol", "publickey");
+    throw new DbsApiError(
+      "protocol",
+      "publickey",
+      undefined,
+      dbsResponseInfo(key.response),
+    );
   }
 
   let encryptedPassword: string;
@@ -127,7 +138,7 @@ export async function loginDbsWithFetch(
     "authenticate",
   );
   const commCode = stringField(auth.body, "commCode");
-  if (!commCode) throw authenticationError(auth.body);
+  if (!commCode) throw authenticationError(auth.body, auth.response);
 
   const token = await send(
     `/iam/v1/oauth2/realms/tw/access_token?${new URLSearchParams({
@@ -140,7 +151,12 @@ export async function loginDbsWithFetch(
   );
   const accessToken = stringField(token.body, "access_token");
   if (!token.response.ok || !accessToken) {
-    throw new DbsApiError("protocol", "access_token");
+    throw new DbsApiError(
+      "protocol",
+      "access_token",
+      undefined,
+      dbsResponseInfo(token.response),
+    );
   }
   let customerId =
     auth.response.headers.get("customerid") ??
@@ -171,10 +187,20 @@ export async function loginDbsWithFetch(
       );
       customerId = result.response.headers.get("customerid") ?? customerId;
       if (result.response.status === 401 || result.response.status === 403) {
-        throw new DbsApiError("credentials", request.actionId);
+        throw new DbsApiError(
+          "credentials",
+          request.actionId,
+          undefined,
+          dbsResponseInfo(result.response),
+        );
       }
       if (!result.response.ok) {
-        throw new DbsApiError("connection", request.actionId);
+        throw new DbsApiError(
+          "connection",
+          request.actionId,
+          undefined,
+          dbsResponseInfo(result.response),
+        );
       }
       return result.body;
     },
@@ -193,19 +219,23 @@ export async function loginDbsWithFetch(
 }
 
 /** 只保留白名單銀行代碼，不保存銀行訊息原文。 */
-function authenticationError(body: Record<string, unknown>): DbsApiError {
+function authenticationError(
+  body: Record<string, unknown>,
+  response: Response,
+): DbsApiError {
+  const info = dbsResponseInfo(response);
   const code = [body.code, body.responseCode, body.errorCode]
     .map((value) => (value == null ? "" : String(value)))
     .find(
       (value) => LOCKED_CODES.has(value) || DUPLICATE_SESSION_CODES.has(value),
     );
   if (code && LOCKED_CODES.has(code)) {
-    return new DbsApiError("locked", "authenticate", code);
+    return new DbsApiError("locked", "authenticate", code, info);
   }
   if (code && DUPLICATE_SESSION_CODES.has(code)) {
-    return new DbsApiError("duplicate_session", "authenticate", code);
+    return new DbsApiError("duplicate_session", "authenticate", code, info);
   }
-  return new DbsApiError("credentials", "authenticate");
+  return new DbsApiError("credentials", "authenticate", undefined, info);
 }
 
 function stringField(body: Record<string, unknown>, key: string) {

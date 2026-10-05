@@ -70,6 +70,7 @@ export async function syncDbs(
     const now = new Date();
     data = parseDbsPayloads(await collectDbsPayloads(session, now), now);
   } catch (error) {
+    logDbsError(error);
     throw dbsSyncError(error);
   } finally {
     if (session) {
@@ -123,6 +124,26 @@ export async function syncDbs(
     newRecords,
     cursorUpdated: false,
   };
+}
+
+/** 只記錄錯誤類型、步驟、白名單代碼與 HTTP 狀態，不記錄銀行訊息、帳密或 token。 */
+function logDbsError(error: unknown) {
+  const apiError =
+    error instanceof DbsProtocolError
+      ? { kind: "protocol", operation: error.operation }
+      : error instanceof DbsApiError
+        ? {
+            kind: error.kind,
+            operation: error.operation,
+            bankCode: error.bankCode,
+            httpStatus: error.response?.status,
+            contentType: error.response?.contentType,
+          }
+        : {
+            kind: "unexpected",
+            errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+          };
+  console.error(JSON.stringify({ event: "dbs_api_error", ...apiError }));
 }
 
 /** 帳密、鎖定與重複登入需要使用者處理；其餘為連線或格式問題。 */
