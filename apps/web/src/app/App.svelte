@@ -19,6 +19,7 @@
   import { parseViewHash, viewHash } from "./navigation";
   import { queryClient } from "./query-client";
   import type {
+    ActivityInstitutionFilter,
     DetailView,
     MobileSettingsView,
     PrimaryView,
@@ -49,6 +50,7 @@
   const api = createApiClient();
   let view = $state<View>("overview");
   let connectorTarget = $state<ConnectorId | null>(null);
+  let activityInstitution = $state<ActivityInstitutionFilter | null>(null);
   let runtime = $state<RuntimeInfo>({ demoMode: false });
   const isDetail = (v: View): v is DetailView => Object.hasOwn(detailLabels, v);
   const isMobileSetting = (v: View): v is MobileSettingsView =>
@@ -114,6 +116,7 @@
       const next = parseViewHash(window.location.hash);
       if (next) {
         view = next;
+        if (next !== "activity") activityInstitution = null;
         scrollToTop();
       }
     };
@@ -131,6 +134,7 @@
     view = next;
     connectorTarget =
       next === "data-sources" ? (targetConnector ?? null) : null;
+    activityInstitution = null;
     const nextHash = viewHash(next);
     if (window.location.hash !== nextHash) {
       if (isStandalone()) {
@@ -144,6 +148,10 @@
       }
     }
     scrollToTop();
+  }
+  function openInstitutionActivity(filter: ActivityInstitutionFilter) {
+    navigate("activity");
+    activityInstitution = filter;
   }
   function navigateBack() {
     if (isDetail(view)) navigate("assets");
@@ -287,11 +295,15 @@
               {#if view === "assets"}
                 {@const Page =
                   module.default as typeof import("@/features/assets/AssetsPage.svelte").default}
-                <Page {api} />
+                <Page {api} onOpenActivity={openInstitutionActivity} />
               {:else if view === "activity"}
                 {@const Page =
                   module.default as typeof import("@/features/activity/ActivityPage.svelte").default}
-                <Page {api} />
+                <Page
+                  {api}
+                  institution={activityInstitution}
+                  onClearInstitution={() => (activityInstitution = null)}
+                />
               {:else if view === "investments"}
                 {@const Page =
                   module.default as typeof import("@/features/assets/Investments.svelte").default}

@@ -8,6 +8,7 @@
     investmentTransactionsQuery,
   } from "@/data/investments/queries";
   import type { ApiClient } from "@/shared/api/client";
+  import type { ActivityInstitutionFilter } from "@/app/types";
   import { formatCompactTwd, formatCurrency } from "@/shared/format/financial";
   import EmptyState from "@/shared/ui/EmptyState.svelte";
   import InstitutionDetails from "./components/InstitutionDetails.svelte";
@@ -26,7 +27,22 @@
     | { key: "investments"; kind: "investments"; label: "投資" }
     | { key: "manual-assets"; kind: "manual-assets"; label: "其他資產" };
 
-  let { api }: { api: ApiClient } = $props();
+  let {
+    api,
+    onOpenActivity,
+  }: {
+    api: ApiClient;
+    onOpenActivity?: (filter: ActivityInstitutionFilter) => void;
+  } = $props();
+
+  function openInstitutionActivity(group: InstitutionAssetGroup) {
+    onOpenActivity?.({
+      label: group.institution,
+      accountIds: [...group.accounts, ...group.cards].map(
+        (account) => account.id,
+      ),
+    });
+  }
 
   const bank = createQuery(bankQuery(() => api));
   const bills = createQuery(creditCardBillsQuery(() => api));
@@ -297,6 +313,9 @@
           {#if activeItem?.kind === "institution"}
             <InstitutionDetails
               group={activeItem.group}
+              onOpenActivity={onOpenActivity
+                ? () => openInstitutionActivity(activeItem.group)
+                : undefined}
               bills={$bills.data ?? []}
               billsPending={$bills.isPending}
               billsError={$bills.isError}
@@ -380,6 +399,9 @@
                 <div class="border-t border-ink/8 pb-5 pl-4 pt-3">
                   <InstitutionDetails
                     {group}
+                    onOpenActivity={onOpenActivity
+                      ? () => openInstitutionActivity(group)
+                      : undefined}
                     bills={$bills.data ?? []}
                     billsPending={$bills.isPending}
                     billsError={$bills.isError}

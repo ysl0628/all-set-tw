@@ -7,6 +7,8 @@ export interface ActivityItem {
   title: string;
   subtitle: string;
   searchText?: string;
+  /** 銀行與信用卡活動所屬的帳戶 ID；發票與投資活動沒有。 */
+  accountId?: string;
   institutionName?: string;
   accountName?: string;
   amount?: number;

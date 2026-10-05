@@ -96,6 +96,7 @@ export function buildActivityItems(
         subtitle: [institutionName, accountName, matchedInvoice?.invoiceNumber]
           .filter(Boolean)
           .join(" · "),
+        accountId: t.accountId,
         institutionName,
         accountName,
         amount: t.amount,

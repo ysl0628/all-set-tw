@@ -95,7 +95,7 @@ git apply /tmp/dbs-sms-otp-frontend.patch
 - `features/notifications/payload.ts`
 - `features/bank/display.ts`：銀行代碼 810
 - `features/sync/connector-repository.ts` 的 `DIRECT_DEPOSIT_CONNECTOR_IDS`
-- migration `0054_dbs_sync_job.sql`
+- migration `0055_dbs_sync_job.sql`（`0054` 已用於信用卡繳費分類）
 - 前端 `definitions.ts`、`summary.ts`、`ConnectorPanel.svelte`、`schedule-after-sync.ts`
 - README、`docs/004`
 

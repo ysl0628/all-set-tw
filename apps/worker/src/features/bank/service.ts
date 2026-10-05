@@ -13,6 +13,7 @@ import type { MonthDateRange } from "../../platform/month-range";
 import {
   normalizeBankAccountDisplay,
   normalizeBankTransactionDisplay,
+  withSharedCardBalanceAccounts,
 } from "./display";
 import { resolveCalculationExclusion } from "./calculation-service";
 import {
@@ -39,7 +40,9 @@ export async function getBankPage(
   return {
     hasMore,
     last: page.at(-1),
-    accounts: accounts.map(normalizeBankAccountDisplay),
+    accounts: withSharedCardBalanceAccounts(
+      accounts.map(normalizeBankAccountDisplay),
+    ),
     transactions: await presentBankTransactions(db, page),
   };
 }
@@ -55,7 +58,9 @@ export async function getBankRange(
     listBankTransactionsInRange(db, range, days),
   ]);
   return {
-    accounts: accounts.map(normalizeBankAccountDisplay),
+    accounts: withSharedCardBalanceAccounts(
+      accounts.map(normalizeBankAccountDisplay),
+    ),
     transactions: await presentBankTransactions(db, transactions),
   };
 }
