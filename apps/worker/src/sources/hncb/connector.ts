@@ -1,5 +1,12 @@
 import type { SyncResult } from "../types";
-import { BrowserRunCapacityError, launchBrowserWithRetry } from "../browser.js";
+import {
+  BrowserRunCapacityError,
+  launchBrowserWithRetry,
+  connectBrowserWithCancellation,
+  prepareBrowserLoginWithRetry,
+  closeBrowserSession,
+  type ReportBrowserLoginStage,
+} from "../browser.js";
 import puppeteer, {
   type Browser,
   type Dialog,
@@ -147,17 +154,18 @@ export function createHncbConnector(
               assertCaptcha(config.captcha, config.captchaDigitCount);
             }
 
-            browserInstance = await acquireBrowser(
-              browserFetcher,
-              config.browserSessionId,
-            );
-            signal.throwIfAborted();
-            const pages = await browserInstance.pages();
-            page = pages[0] ?? (await browserInstance.newPage());
-            await configurePage(page);
-
             let loggedIn = false;
+            let initialCaptcha:
+              Awaited<ReturnType<typeof captureCaptcha>> | undefined;
             if (config.browserSessionId && config.captcha) {
+              browserInstance = await acquireBrowser(
+                browserFetcher,
+                config.browserSessionId,
+              );
+              signal.throwIfAborted();
+              const pages = await browserInstance.pages();
+              page = pages[0] ?? (await browserInstance.newPage());
+              await configurePage(page);
               const dialogMessage = await submitLogin(page, config.captcha);
               const outcome = await waitForLoginResult(page, dialogMessage);
               if (outcome === "credential") {
@@ -176,11 +184,54 @@ export function createHncbConnector(
                 );
               }
               loggedIn = true;
-            } else if (config.sessionCookies) {
-              await importCookies(page, config.sessionCookies);
-              await gotoAllowingTimeout(page, PERSONAL_JSP);
-              // 失效 session 仍可能停在 personal.jsp，必須看到 main 頁框才算登入成功。
-              loggedIn = await hasMainFrame(page, SESSION_FRAME_TIMEOUT_MS);
+            } else {
+              const prepared = await prepareBrowserLoginWithRetry({
+                binding: browserFetcher,
+                connectorId: "hncb",
+                signal,
+                isRetryable: isLoginPageUnavailable,
+                onBrowser: (active) => {
+                  browserInstance = active;
+                  closingBrowser = undefined;
+                },
+                prepare: async (
+                  browser,
+                  observePage,
+                  preparationSignal,
+                  attempt,
+                  reportStage,
+                ) => {
+                  const pages = await browser.pages();
+                  const page = pages[0] ?? (await browser.newPage());
+                  observePage(page);
+                  reportStage("configure_page");
+                  await configurePage(page);
+                  let loggedIn = false;
+                  if (attempt === 1 && config.sessionCookies) {
+                    reportStage("restore_session");
+                    await importCookies(page, config.sessionCookies);
+                    await gotoAllowingTimeout(page, PERSONAL_JSP);
+                    loggedIn = await hasMainFrame(
+                      page,
+                      SESSION_FRAME_TIMEOUT_MS,
+                    );
+                  }
+                  preparationSignal.throwIfAborted();
+                  if (loggedIn) return { page, loggedIn, captcha: undefined };
+                  if (!recognizeCaptcha) {
+                    throw new HncbVerificationRequiredError(
+                      "華南銀行 session 已失效，需要重新登入。",
+                    );
+                  }
+                  await openLoginAndFill(page, config, reportStage);
+                  reportStage("captcha");
+                  const captcha = await captureCaptcha(page);
+                  return { page, loggedIn, captcha };
+                },
+              });
+              page = prepared.value.page;
+              loggedIn = prepared.value.loggedIn;
+              initialCaptcha = prepared.value.captcha;
             }
 
             if (!loggedIn) {
@@ -189,7 +240,13 @@ export function createHncbConnector(
                   "華南銀行 session 已失效，需要重新登入。",
                 );
               }
-              await loginWithOcr(page, config, recognizeCaptcha, signal);
+              await loginWithOcr(
+                page,
+                config,
+                recognizeCaptcha,
+                signal,
+                initialCaptcha,
+              );
             }
             authenticated = true;
             await waitForMainFrame(page);
@@ -341,12 +398,16 @@ async function loginWithOcr(
     digitCount: number,
   ) => Promise<string>,
   signal: AbortSignal,
+  initialCaptcha?: Awaited<ReturnType<typeof captureCaptcha>>,
 ) {
   let lastError: unknown;
   for (let attempt = 1; attempt <= HNCB_AUTO_LOGIN_ATTEMPTS; attempt += 1) {
     signal.throwIfAborted();
     try {
-      const captcha = await openLoginAndCaptureCaptcha(page, config);
+      const captcha =
+        attempt === 1 && initialCaptcha
+          ? initialCaptcha
+          : await openLoginAndCaptureCaptcha(page, config);
       signal.throwIfAborted();
       logHncbEvent("hncb_login_stage", { attempt, stage: "captcha_captured" });
       const answer = await recognizeCaptcha(
@@ -433,7 +494,11 @@ async function openLoginAndCaptureCaptcha(page: Page, config: HncbConfig) {
   );
 }
 
-async function openLoginAndFill(page: Page, config: HncbConfig) {
+async function openLoginAndFill(
+  page: Page,
+  config: HncbConfig,
+  reportStage?: ReportBrowserLoginStage,
+) {
   const failedRequests: { path: string; errorText: string }[] = [];
   const onRequestFailed = (request: {
     url: () => string;
@@ -449,7 +514,9 @@ async function openLoginAndFill(page: Page, config: HncbConfig) {
   };
   page.on("requestfailed", onRequestFailed);
   try {
+    reportStage?.("navigate");
     await gotoAllowingTimeout(page, LOGIN_URL);
+    reportStage?.("form");
     await waitForHncbLoginReady(page, HNCB_LOGIN_READY_TIMEOUT_MS);
   } catch (error) {
     const snapshot = await readHncbLoginSnapshot(page);
@@ -852,9 +919,7 @@ async function gotoAllowingTimeout(page: Page, url: string) {
     ...snapshot,
   });
   if (snapshot.href === "chromewebdata/" && !snapshot.hasUser) {
-    throw new HncbConnectionError(
-      "華南登入頁載入失敗，已停止重試，請稍後再試。",
-    );
+    throw new HncbConnectionError("華南登入頁載入失敗，請稍後再試。");
   }
 }
 
@@ -876,6 +941,7 @@ async function readHncbLoginSnapshot(page: Page) {
         }),
         "doSubmit",
       ),
+      1_000,
     );
     return {
       href: describeHncbUrl(snapshot.href) || href,
@@ -929,6 +995,11 @@ function safeHncbLogMessage(error: unknown) {
 function isLoginPageUnavailable(error: unknown) {
   if (error instanceof HncbCaptchaUnavailableError) return true;
   if (error instanceof HncbCaptchaRejectedError) return false;
+  if (
+    error instanceof HncbConnectionError &&
+    error.message.startsWith("華南登入頁載入失敗")
+  )
+    return true;
   const message = error instanceof Error ? error.message : String(error);
   return (
     error instanceof HncbActionTimeoutError ||
@@ -990,7 +1061,10 @@ async function acquireBrowser(
     }
     if (preferred) {
       try {
-        return await puppeteer.connect(browserFetcher, preferred.sessionId);
+        return await connectBrowserWithCancellation(
+          browserFetcher,
+          preferred.sessionId,
+        );
       } catch {
         throw new HncbBrowserCapacityError(
           "前一個華南驗證工作階段尚未釋放，請稍候再試。",
@@ -1023,31 +1097,8 @@ async function launchBrowser(
 }
 
 async function closeHncbBrowser(browser: Browser, browserFetcher: Fetcher) {
-  try {
-    await withActionTimeout(browser.close());
-  } catch (error) {
-    try {
-      const sessionId = browser.sessionId();
-      const response = await withActionTimeout(
-        browserFetcher.fetch(
-          `https://fake.host/v1/devtools/browser/${encodeURIComponent(sessionId)}`,
-          { method: "DELETE" },
-        ),
-        5_000,
-      );
-      if (!response.ok)
-        throw new Error(`Browser close HTTP ${response.status}`);
-      logHncbEvent("hncb_browser_cleanup_fallback", {
-        closeError: safeHncbLogMessage(error),
-      });
-    } catch (fallbackError) {
-      logHncbEvent("hncb_browser_cleanup_failed", {
-        closeError: safeHncbLogMessage(error),
-        fallbackError: safeHncbLogMessage(fallbackError),
-      });
-    } finally {
-      await browser.disconnect().catch(() => undefined);
-    }
+  if (!(await closeBrowserSession(browserFetcher, browser))) {
+    logHncbEvent("hncb_browser_cleanup_failed", {});
   }
 }
 

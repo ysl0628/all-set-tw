@@ -1,6 +1,6 @@
 # 後端架構與維護約定
 
-後端執行於 Cloudflare Workers，使用 Hono 提供 API，並透過 Cloudflare D1、Browser Rendering、Workers AI、Cron Triggers 與 Queues 完成資料儲存、銀行登入、驗證碼辨識及排程同步。
+後端執行於 Cloudflare Workers，使用 Hono 提供 API，並透過 Cloudflare D1、Browser Rendering、Workers AI、Cron Triggers、Queues 與 Durable Objects 完成資料儲存、銀行登入、驗證碼辨識、排程同步及兆豐的固定出口。
 
 目前後端採用 **feature-oriented Vertical Slice Architecture**。程式依業務功能分組，而不是將所有 Controller、Service、Repository 分別集中在全域目錄。
 
@@ -208,7 +208,7 @@ SQL 應放在使用它的 feature 附近。只有確實被多個 feature 共用�
 
 Cloudflare Worker 與 HTTP 平台層，目前包含：
 
-- Worker bindings 與 Hono binding types。
+- Worker bindings 與 Hono binding types。兆豐 App API 的對外請求由 `MegabankEgress` 轉送，物件定義見 `platform/megabank-egress-object.ts`。
 - Hono factory。
 - API error response。
 - Demo 唯讀模式。
@@ -216,6 +216,8 @@ Cloudflare Worker 與 HTTP 平台層，目前包含：
 - Zod validation hook。
 - Cloudflare Access JWT 驗證。
 - 設定與加密工具。
+
+連接器設定、推播訂閱與集保同步狀態的加密金鑰統一由 `platform/config.ts` 的 `configEncryptionKey` 取得。`CONFIG_ENCRYPTION_KEY=auto` 使用部署 script 保存的 `GENERATED_CONFIG_ENCRYPTION_KEY`，其餘值沿用自訂金鑰；缺少必要的金鑰時直接失敗，詳細初始化與復原限制見[部署文件](005-deployment.md#1-選擇加密金鑰)。
 
 `platform` 不得依賴任何具體 feature。
 
@@ -241,7 +243,9 @@ Middleware 應只處理跨功能的 request concern，不應承擔 feature 商�
 
 實體目錄集中不改變相依邊界：`sync.ts` 可依賴 connector、protocol、client、repository 與明確的共用 service；protocol／client 不得依賴 Hono、D1、Worker `Env`、adapter 或同步流程，也不得直接寫入資料庫。來源之間不引用彼此的內部實作。
 
-`sources` 根目錄只保留跨來源使用的能力：`browser.ts` 管 browser acquisition 與 capacity 錯誤，`types.ts` 定義後端 `Connector`／`SyncResult`，`sync-window.ts` 與 `credit-card-status.ts` 提供共同 policy／判斷。`config-registry.ts` 直接引用各來源的純 schema，供設定 feature 使用；同步 handler 仍由 `features/sync/registry.ts` 組裝。Worker 與測試直接引用來源檔案，不建立跨來源的實作匯出入口。
+`sources` 根目錄只保留跨來源使用的能力：`browser.ts` 管 browser acquisition、capacity 錯誤、登入前頁面停滯復原與有期限的 session 清理，`types.ts` 定義後端 `Connector`／`SyncResult`，`sync-window.ts` 與 `credit-card-status.ts` 提供共同 policy／判斷。`config-registry.ts` 直接引用各來源的純 schema，供設定 feature 使用；同步 handler 仍由 `features/sync/registry.ts` 組裝。Worker 與測試直接引用來源檔案，不建立跨來源的實作匯出入口。
+
+Browser 登入前復原最多三次嘗試，只包住頁面與驗證碼準備；OCR、送出登入與資料查詢留在來源 adapter，政策細節見 `docs/004-connector-development.md`。
 
 ### `shared/`
 
@@ -388,7 +392,7 @@ Request
 
 ## Request 驗證
 
-外部輸入應優先使用 Zod 驗證：
+外部輸入應優先使用 Zod 4 驗證：
 
 ```ts
 api.post(
@@ -539,6 +543,12 @@ sources/
 │   ├── authorizations.ts
 │   ├── matching.ts
 │   └── repository.ts
+├── taishin/
+│   ├── sync.ts
+│   ├── connector.ts
+│   ├── protocol.ts            # 信用卡與設定協定
+│   ├── deposit-protocol.ts    # 臺外幣活存查詢與正規化
+│   └── authorizations.ts      # 跨次授權配對與舊版已入帳 ID 相容
 ├── einvoice/
 │   ├── sync.ts                # 電子發票 Queue 分段同步
 │   ├── protocol.ts
@@ -568,10 +578,19 @@ sources/
 | `config.ts`、`connector-state.ts`                | 取得設定、加密敏感欄位，區分公開偏好、敏感 session 與安全 cursor。                                                                         |
 | `connector-repository.ts`                        | 共用設定／cursor 寫入、設定版本 guard 與跨來源帳戶關聯；銀行專用修復放在來源目錄。                                                         |
 | `lock.ts`、`errors.ts`                           | 共用 lease／heartbeat、使用者操作判定與錯誤訊息／log 脫敏。                                                                                |
+| `execution.ts`、`run-state.ts`                   | 每次同步的期限、失鎖取消、D1 owner guard，以及 durable run 的停滯／重試狀態。                                                              |
 | `record-mapper.ts`、`persistence.ts`             | 將 connector result 轉成 write record，透過 staging table 與 D1 batch 寫入正式資料表。                                                     |
+| `card-authorization-matching.ts`                 | 依正規化的帳戶、卡片、消費日、幣別與正負金額，按穩定順序逐一配對授權與明細；不依賴 D1 或來源協定。                                         |
+| `card-authorization-write.ts`                    | 共用配對保存、可靠時刻與分類／排除／發票移轉；合併歷史候選、排除既有關係，晚到的舊識別更新已建立的目標。                                   |
 | `transaction-merge.ts`、`card-reconciliation.ts` | 共用舊交易合併與單卡摘要帳戶修復；保留使用者偏好、分類與發票關聯。                                                                         |
 
 Worker 的 `sources/<connectorId>/sync.ts` 負責設定解密、connector 呼叫與同步資料寫入；單次銀行流程也處理互動式 challenge，override 型別與來源 colocate。`ctbc/authorizations.ts` 管信用卡授權合併，`hncb/repository.ts` 管華南舊交易／帳戶修復，`nextbank/deposits.ts` 與 `obank/time-deposits.ts` 管存款生命週期。共用同步管理留在 `features/sync`，來源之間共用的外部取資料工具留在 `sources` 根目錄。
+
+玉山、台新、永豐、中信、第一銀行、華南與兆豐提供來源的卡片識別後，使用共用 `card-authorization-matching.ts`：同帳戶、同卡、台灣時區同消費日、同幣別同額同方向的群組，依授權時刻與 `sourceId`、明細的 `sourceId` 順序逐一分配，每筆明細只配一次，不比店名。兩側筆數不等時只配可對應的筆數，其餘持續顯示；既有配對與被占用的目標不重新分配。核心可先執行來源提供的雙向唯一可靠識別比對；雙方授權碼明確不同時，禁止金額 fallback。永豐精確配對後仍以來源策略處理外幣／調整金額。
+
+交易只保留 `pending`／`posted`，不新增已出帳狀態；帳單明細沿用原本補抓／更新用途，帳單摘要仍計算負債。`card-authorization-write.ts` 在同一 promotion batch 保存配對、補可靠時刻及移轉使用者設定，目標既有決定優先，發票衝突保留。第一銀行、華南、兆豐直接使用共用 preparation；玉山、台新、永豐與中信維持來源適配與舊 ID 相容。玉山先把即時授權接到未入帳歷史明細，再接正式入帳，依序移轉時刻與設定；中信保留原授權 ID 並完成合併，發票衝突時不刪除交易。來源差異與尚未提供待入帳資料的銀行見連接器文件。
+
+台新由 `deposit-protocol.ts` 查詢臺外幣活存，與信用卡完整授權／未出帳／帳單合併後交給共用 mapper。原 pending 列持續保存，以共用可見性規則排除重複計算。來源 `sync.ts` 將配對、偏好與發票移轉、canonical 帳戶關聯、金融資料 promotion 及 cursor 放在同一 D1 batch，並以既有同步鎖及原憑證版本保護。銀行協定與真實帳戶驗收限制見連接器文件。
 
 各來源直接引用同一來源目錄的 protocol／adapter，以及 `features/sync` 的共用 record mapper、persistence，不經由 `manual-sync.ts` 匯出，也不互相依賴其他來源。電子發票與集保的 `sync.ts`／`run-repository.ts` 管理 durable Queue 流程，集保不再保留另一套單次同步實作。目錄調整不改變驗證、session、cursor 與 D1 promotion／finalize 的原子邊界。
 
@@ -603,6 +622,14 @@ sequenceDiagram
 
 ## 同步鎖與排程
 
+每週排程可選擇一至七個星期，所有執行日共用同一個台北開始時間。
+`sync_jobs` 與 `sync_schedule_settings` 的 `preferred_weekdays` 保存星期 JSON 陣列；
+NULL 時在 repository selection 沿用 `[preferred_weekday]`，舊單日設定不需重新儲存。
+API 驗證星期不可重複、至少一天，並按 0 至 6 排序；舊版單日輸入仍可使用。
+`nextSyncRunAt` 從勾選星期找出嚴格晚於目前時間的最近執行時間，
+一般同步及電子發票／集保結案皆使用相同計算。更新預設排程只重算繼承來源；
+Cron、Queue 與預設批次的執行方式維持既有流程。
+
 同一個 connector 的不同同步 scope 共用 canonical connector lock，避免以下工作重疊：
 
 - 手動同步與排程同步。
@@ -611,12 +638,17 @@ sequenceDiagram
 
 目前同步 lock：
 
-- Lease 為 30 分鐘。
+- 一般同步與 durable run 的 connector lease 為 10 分鐘；CAPTCHA preparation 維持 3 分鐘。
 - 執行期間每 5 分鐘續租。
+- 一般同步自執行開始最多 10 分鐘；電子發票與集保自 run 建立起最多 10 分鐘，包含 Queue 等待與所有分段，heartbeat 不延長整體期限。CAPTCHA preparation 最多 3 分鐘，來源既有的較短期限仍適用。
+- 續租只允許未過期的 owner。續租失敗或達到期限會透過 AbortSignal 停止等待，關閉仍連線的 Browser session，並中止電子發票／集保 HTTP 請求；未支援取消的外部請求即使遲到完成，也不能寫入 D1。
+- `execution.ts` 為本次 invocation 包裝 D1 binding，所有 prepared write 與 batch 都在同一 transaction 前置 canonical owner／有效期限 guard；durable chunk 另核對 chunk owner。正式金融資料、設定／cursor、同步結果與報告皆使用受保護的 binding。失鎖時整個 batch 回滾，不能只在寫入前單獨查鎖。
 - 一般同步工作完成或失敗後必須在 `finally` 釋放。durable run 的 connector lock 跨 invocation 維持，由成功寫入或失敗結案流程釋放；每段另有 owner-scoped run lease。
 - Lock acquisition 失敗時回傳或記錄「已有同步執行中」，不得平行執行同一 connector。
 
-Cron trigger 只負責向 `SYNC_QUEUE` 送出 scheduler 啟動訊息。Queue consumer
+每次 10 分鐘 Cron kick 先恢復停滯的電子發票／集保 run：沒有有效 chunk lease 且 3 分鐘未更新者補送 continuation，超過整體期限者先以 owner guard 結案。有效 chunk lease 不會被 Cron 中止；該 invocation 自行受執行期限限制。一般同步的過期殘留鎖會標記失敗並清除，保留最後成功時間。單一 run 的恢復失敗只記錄 log，不阻擋其他 run 與 scheduler kick；20 秒的 scheduler 串接不重複執行恢復。
+
+Cron trigger 向 `SYNC_QUEUE` 送出 scheduler 啟動訊息。Queue consumer
 每次 invocation 最多處理一個 connector，完成後若確實處理了工作便以 20 秒延遲送出下一個訊息，
 避免連續啟動 Browser session 時撞上 Browser Run 的 acquisition rate limit；下一次 consumer
 invocation 因此不必等待下一個 10 分鐘 Cron，且擁有獨立的 Worker CPU、subrequest 與執行時間額度。
@@ -624,10 +656,17 @@ invocation 因此不必等待下一個 10 分鐘 Cron，且擁有獨立的 Worke
 逐一執行。是否到期仍由 D1 sync job 狀態判斷；沒有可執行工作時 consumer 不再送出訊息，
 結束本次串接。
 
+這段 20 秒延遲只作用於不同 Queue 工作之間。同一個 connector invocation 的首次
+Browser session 取得與登入頁復原重開，皆由共用 browser adapter 處理 acquisition
+限流等待與額度重查；重開前須確認舊 session 已關閉。首次建立遇到 `503` 後重試
+收到暫時性 `429`，也會依 `Retry-After`（缺少有效 header 時預設 20 秒）等待後補試，
+每輪最多三次取得嘗試。登入準備每輪最多 60 秒、共用總預算 180 秒；
+額度查詢、取得瀏覽器與限流等待都算入總預算，來源原有較短期限與取消 signal 仍優先適用。
+
 Demo 模式（`DEMO_MODE`）不執行背景同步：Cron 不送出 scheduler 啟動訊息，Queue consumer
 不處理任何訊息，避免啟用 Demo 前殘留的訊息繼續以已儲存的憑證登入外部服務。scheduler 啟動訊息
 直接 ack；電子發票與集保分段訊息則以 1 小時延遲重新送出以保留 continuation，關閉 Demo 後會
-重新嘗試處理進行中的 durable run。若期間 session 過期或設定變更，仍可能需要重新驗證或重新啟動同步。
+重新檢查進行中的 durable run；已超過整體期限者結案，需要重新啟動同步。若期間 session 過期或設定變更，仍可能需要重新驗證。
 
 電子發票不在單一 connector invocation 內擷取所有品項明細。它使用
 `einvoice_sync_runs` / `einvoice_sync_run_items` 作為 durable work queue：手動或排程
@@ -636,12 +675,14 @@ Demo 模式（`DEMO_MODE`）不執行背景同步：Cron 不送出 scheduler 啟
 `public_config`、HTTP request 或 catalog 可選的 `fetchDetails` 偏好。
 
 電子發票 run 與 item 都以 owner-scoped rolling lease 防止 Queue delivery 重送時平行處理。
+每次 delivery 使用獨立 UUID 作為 chunk owner；3 分鐘 chunk lease 每分鐘續租，明細處理也每五張續租，續租不更新業務進度時間。
 只有全部 item 成功後，service 才把 durable run items 當作 staging source，以固定五個
 set-based D1 statements promotion 至正式表並更新 cursor；這個 batch 以設定版本 CAS 防止
 憑證更新競態。後續 finalize path 更新 `sync_jobs`、排程批次結果與通知；`promoted_at` 讓
 promotion 前後的重送皆可冪等。
 暫時錯誤由 Queue retry，session 失效會清除 session 後重新初始化；需要使用者操作或重試
 耗盡才將 run 結案為 `needs_user_action` 或 `failed`，不寫入部分完成的明細。
+建立 run 後的初始狀態寫入或首次 Queue enqueue 失敗會補償結案並清鎖；重試既有 run 會重新 enqueue，不會只回傳 202 而沒有 continuation。手動重試可補送既有排程 run，保留原 trigger 與批次。逾時且無有效 chunk lease 的舊 run 先結案，再建立新 run。成功／失敗 finalize 同時核對 canonical owner 與 chunk owner／無有效 chunk lease，並在同一 batch 更新結果與釋放鎖。
 
 ### 集保分段同步
 
@@ -652,14 +693,19 @@ promotion 前後的重送皆可冪等。
 
 手動啟動會先初始化登入以回報 OTP 等互動需求；排程由 Queue 初始化且不主動寄送
 OTP。API 的排入同步回應不代表全部資料已完成，前端須追蹤 sync job lifecycle。
+手動初始化也取得獨立 run lease，避免同一 run 的 Queue delivery 同時登入。
 每個 chunk 取得 owner-scoped run lease、更新 connector lock，最多 claim 一個
 分頁 item；仍有 pending 或 processing work 時 enqueue 下一段。item 更新使用
 claim token，chunk 的 `finally` 只釋放該 owner 的 run lease。
+3 分鐘 run lease 每分鐘續租；既有 run 重試會補送 continuation，逾時 run 與停滯恢復沿用電子發票的判斷。
 
 分頁結果完成後彙整並透過 `sync_write_staging` 與 staged persistence 寫入正式表，
 寫入前檢查設定版本，並在 promotion batch 更新 connector 狀態、cursor 與 sync job。
 後續處理排程結果、手動報告修復與 run 結案；`promoting`、`promoted_at` 用於辨識
 promotion 與 finalize 的進度。暫時錯誤使用 Queue retry，需要互動或重試耗盡時結案。
+connector lock 保留到報告結果寫入及 run 成功結案；失敗的 run transition、sync job、排程結果、staging 清理與清鎖使用同一個 owner／idle lease guard batch。
+
+`GET /api/sync-jobs` 統一以有效 connector lock 或電子發票／集保 active run 判斷 `running`，並提供 `runId`、`phase`、`lastProgressAt`、`retryAfterSeconds`。durable run 的 `phase = stalled` 表示可補送；有效 chunk lease 的剩餘時間是最短重試等待，不是預估完成時間。一般同步的 `lastProgressAt` 沿用 job 狀態更新時間，可能來自 heartbeat；durable run 則不將 lease renewal 當成進度。
 
 ## 同步結果通知
 
@@ -708,12 +754,15 @@ Connector 不得直接寫入金融資料表。
 永豐信用卡取得 `LatestTx.Items` 與 `OutstandingDetail.Detail` 後，在 `bank_transactions`
 原表保存授權，以 `matched_transaction_id` 記錄已入帳關係，不另設授權表或停用欄位。
 配對僅限同卡、同消費日，不跨日；排除手續費、服務費、不同金額方向與卡片識別不足的資料。
-既有相同 sourceId 優先，其次同幣別同金額，再以正規化店名相似度及目前匯率金額接近度
-計分；同組採最大總分的一對一分配，無合理候選則不配對。跨幣別不要求人工確認。
+既有相同 sourceId 優先；同帳戶、同幣別同金額交給共用核心按穩定順序逐一配對，不比店名。
+剩餘外幣／調整金額以正規化店名相似度及目前匯率金額接近度計分，同卡同消費日採最大總分的
+一對一分配，無合理候選則不配對；跨幣別限同一信用卡摘要帳戶的不同幣別，不要求人工確認。
 已配對關係不重新分配；已入帳保留正式金額、幣別、入帳日與原始 payload，繼承授權時刻。
 配對後優先沿用待入帳名稱作為 description 與 counterparty，供顯示、搜尋及規則分類；
 空白或預設「永豐信用卡消費」名稱不覆蓋正式名稱。每次同步也修復既有配對，即使銀行
 不再回傳該交易；同 ID 入帳沿用已保存名稱。舊版已覆蓋且來源不再提供的名稱無法復原。
+同 ID 入帳以 `raw.authorizationMatched` 保存完成狀態；保有授權時刻的舊已入帳列也保留
+原時刻與名稱，不再作為另一筆授權的配對目標。
 在同一 D1 batch upsert 交易、保存配對、補入時刻，並於首次配對移轉原授權的個別分類、
 計算偏好（已入帳既有設定優先）及發票關係。原授權與設定持續保存。
 活動、搜尋、發票配對候選與收支統計僅排除 `status = 'pending'` 且
@@ -755,6 +804,17 @@ Connector 不得直接寫入金融資料表。
   不存在的報告回傳 404。報告 30 天清理會級聯清除明細。
 
 新增資料筆數保留現有定義；此版不追蹤任意欄位修改歷史，也不新增活動頁同步排序。
+
+## 匯率更新
+
+`features/exchange-rates` 的更新流程取得 USD、JPY、EUR，加上有效銀行／信用卡帳戶、
+各 connector／asset type 最新投資持倉與手動資產的其他幣別。帳戶讀取最新餘額，手動資產讀取最新估值；
+清單與更新流程共用 `shared/exchange-rates.ts`，排除 TWD、NAN 等非有效貨幣代碼並去重，
+只略過實際金額為 0 的資產，不將外幣四捨五入後再判斷。
+`GET /api/exchange-rates/currencies` 回傳預設幣別與有非零金額的資產幣別，避免依賴前端資產列表的分頁。
+外部來源以 TWD 為基準，儲存時取倒數作為原幣換算 TWD 的匯率，使用來源更新時間。
+來源未提供的額外幣別略過並保留已有匯率；來源回傳無效匯率或預設幣別缺值時不寫入。
+取得的匯率以單一 D1 batch upsert，不再清空整張匯率表；`GET /api/exchange-rates` 回傳所有已儲存幣別。
 
 ## 新增一般功能
 

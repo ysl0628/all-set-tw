@@ -1,3 +1,4 @@
+import { createSyncExecution } from "../../features/sync/execution";
 import type { Env } from "../../platform/env";
 import { canonicalSyncLockRowId } from "../../features/sync/lock";
 import {
@@ -29,7 +30,11 @@ import {
   connectorStateStatement,
   linkCanonicalBankAccountsStatement,
 } from "../../features/sync/connector-repository";
-import { reconcileSinopacLegacyTransactionStatements } from "./repository";
+import {
+  reconcileSinopacCardPaymentStatements,
+  reconcileSinopacCardStaleStatements,
+  reconcileSinopacLegacyTransactionStatements,
+} from "./repository";
 import {
   parsePublicConnectorConfig,
   splitConnectorCursorState,
@@ -50,6 +55,7 @@ import {
   rebuildBankDepositHistory,
   dateFromIso,
 } from "../../features/net-worth/service";
+import { logSinopacSyncSummary } from "./summary-log";
 
 export type SinopacSyncOverrides = {
   captcha?: string;
@@ -68,34 +74,42 @@ export async function prepareSinopacCaptchaSession(env: Env) {
   });
   if (!locked) throw new SyncAlreadyRunningError(connectorId);
 
+  const execution = createSyncExecution(
+    env,
+    { lockRowId, runId },
+    { deadline: Date.now() + 3 * 60 * 1000 },
+  );
   try {
-    const settings = await requireConnectorSettings(env.DB, connectorId);
-    const stored = await decryptJson<Record<string, unknown>>(
-      settings.encrypted_config,
-      configEncryptionKey(env),
-    );
-    const publicStored = settings.public_config
-      ? JSON.parse(settings.public_config)
-      : {};
-    const config = parseSinopacConfig({ ...stored, ...publicStored });
-    const prepared = await prepareSinopacCaptcha(env.BROWSER, config);
-    await updateConnectorEncryptedConfig(
-      env.DB,
-      connectorId,
-      await encryptJson(
-        {
-          ...stored,
-          browserSessionId: prepared.browserSessionId,
-          browserSessionExpiresAt: prepared.browserSessionExpiresAt,
-        },
+    return await execution.run(async (env) => {
+      const settings = await requireConnectorSettings(env.DB, connectorId);
+      const stored = await decryptJson<Record<string, unknown>>(
+        settings.encrypted_config,
         configEncryptionKey(env),
-      ),
-    );
-    return {
-      captchaImage: prepared.captchaImage,
-      expiresAt: prepared.browserSessionExpiresAt,
-    };
+      );
+      const publicStored = settings.public_config
+        ? JSON.parse(settings.public_config)
+        : {};
+      const config = parseSinopacConfig({ ...stored, ...publicStored });
+      const prepared = await prepareSinopacCaptcha(env.BROWSER, config);
+      await updateConnectorEncryptedConfig(
+        env.DB,
+        connectorId,
+        await encryptJson(
+          {
+            ...stored,
+            browserSessionId: prepared.browserSessionId,
+            browserSessionExpiresAt: prepared.browserSessionExpiresAt,
+          },
+          configEncryptionKey(env),
+        ),
+      );
+      return {
+        captchaImage: prepared.captchaImage,
+        expiresAt: prepared.browserSessionExpiresAt,
+      };
+    });
   } finally {
+    execution.stop();
     await releaseSyncJobLock(env.DB, lockRowId, runId);
   }
 }
@@ -121,6 +135,7 @@ export async function syncSinopac(
   console.log(
     `[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`,
   );
+
   let result: Awaited<
     ReturnType<ReturnType<typeof createSinopacConnector>["sync"]>
   >;
@@ -134,6 +149,7 @@ export async function syncSinopac(
       );
     } catch (error) {
       if (!(error instanceof SinopacVerificationRequiredError)) throw error;
+
       const session = await loginSinopacWithOcr(
         env.BROWSER,
         activeConfig,
@@ -190,9 +206,19 @@ export async function syncSinopac(
   const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
   const bankTransactions = result.bankTransactions ?? [];
   const creditCardBills = result.creditCardBills ?? [];
-  console.log(
-    `[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`,
-  );
+
+  logSinopacSyncSummary({
+    accountCount: bankAccounts.length,
+    snapshotCount: bankBalanceSnapshots.length,
+    transactionCount: bankTransactions.length,
+    billCount: creditCardBills.length,
+    loanOverviewComplete: result.loanSummary.overviewComplete,
+    loanAccountListFailures: result.loanSummary.accountListFailures,
+    loanAccountDetailFailures: result.loanSummary.accountDetailFailures,
+    loanPaymentDetailFailures: result.loanSummary.paymentDetailFailures,
+    loanAccountCount: result.loanSummary.accountCount,
+    loanSnapshotCount: result.loanSummary.snapshotCount,
+  });
 
   const now = new Date().toISOString();
   let records: SyncWriteRecord[] = [
@@ -249,6 +275,15 @@ export async function syncSinopac(
     afterPromoteStatements: [
       ...reconcileSinopacLegacyTransactionStatements(env.DB),
       ...(authorizationWrite?.afterPromoteStatements ?? []),
+      // 以下合併會刪除舊列，必須在授權寫入之後：授權寫入沿用同步前讀到的交易 ID，
+      // 合併再把這些配對改指向留下的列，否則會引用已刪除的列而讓整次同步回滾。
+      // 只有這次帶回繳款列時才需要把舊版的繳款列併進來。
+      ...(bankTransactions.some((transaction) =>
+        transaction.sourceId.includes(":payment-"),
+      )
+        ? reconcileSinopacCardPaymentStatements(env.DB)
+        : []),
+      ...reconcileSinopacCardStaleStatements(env.DB, now),
       ...(bankAccounts.length > 0
         ? [linkCanonicalBankAccountsStatement(env.DB)]
         : []),
@@ -257,10 +292,11 @@ export async function syncSinopac(
   });
   if (bankBalanceSnapshots.length > 0)
     await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+
   return {
     success: true,
     connectorId,
-    scope,
+    scope: SYNC_SCOPE_ALL,
     records:
       bankAccounts.length +
       bankBalanceSnapshots.length +

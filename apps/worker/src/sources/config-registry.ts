@@ -38,7 +38,7 @@ export const connectorConfigSchemas = {
   hsbc: hsbcConfigSchema,
   richart: richartConfigSchema,
   dbs: dbsConfigSchema,
-} satisfies Record<ConnectorId, z.ZodTypeAny>;
+} satisfies Record<ConnectorId, z.ZodType>;
 
 export function parseConnectorConfig(
   connectorId: ConnectorId,
