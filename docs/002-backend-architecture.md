@@ -714,7 +714,7 @@ connector lock 保留到報告結果寫入及 run 成功結案；失敗的 run t
 - API 以 `enqueueManualSync` 取得 canonical lock 後送出 `run-manual-sync`，回傳 202 與 `runId`；已有同步執行中時回傳 409。Queue message 只包含 `connectorId` 與 `runId`，不得攜帶 OTP 或任何憑證。
 - 排入時的租約為 20 分鐘（`QUEUED_MANUAL_SYNC_LEASE_MS`），涵蓋等待前一個 Queue 工作（concurrency 1，最多 10 分鐘）與本次執行；consumer 開始時以同一 `runId` 續租為一般 10 分鐘租約，執行期限自 consumer 開始計算。
 - consumer 與 HTTP 手動同步共用 `runWithManualSyncLock`，記錄成功、失敗或 `needs_user_action`、修復排程報告並釋放鎖。鎖已不屬於此 `runId`（已過期被清除或重複遞送）時不執行。
-- message 一律 ack、不 retry：重送會再次登入銀行，可能重寄 OTP 或觸發銀行的安全機制。結果只看 sync job。
+- message 一律 ack、不 retry：重送會再次登入銀行，可能重寄 OTP 或觸發銀行的安全機制。結果只看 sync job。唯一例外是國泰 OTP 工作階段已過期：此錯誤在登入銀行前發生，且同步已清除該工作階段，consumer 以全新登入在同一次 invocation 內重試一次，比照原本前端的處理。
 - 送出 message 失敗時記錄失敗並釋放鎖。Demo 模式不執行已排入的手動同步，記錄失敗後釋放鎖並 ack。
 - OTP 寄送與驗證（request body 帶 `otpChannel` 或 `otp`）仍在 request 內執行，以便直接回報驗證結果。
 

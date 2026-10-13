@@ -1,3 +1,4 @@
+import type { ConnectorId } from "@taiwan-fin-hub/shared";
 import type { Env, ScheduledSyncQueueMessage } from "../../../platform/env";
 import { isDemoMode } from "../../../platform/http";
 import { runSchedulerTick } from "./scheduler";
@@ -15,6 +16,7 @@ import { recoverStalledSyncRuns } from "./recovery";
 import { abandonQueuedManualSync, runQueuedManualSync } from "../manual-sync";
 import { runConnectorSync } from "../registry";
 import { SYNC_SCOPE_ALL } from "../types";
+import { CathayOtpSessionExpiredError } from "../../../sources/cathaybk/connector";
 
 const queueController = {
   cron: "queue:scheduled-sync",
@@ -170,8 +172,7 @@ async function consumeManualSyncMessage(
       env,
       connectorId,
       runId,
-      (syncEnv) =>
-        runConnectorSync(syncEnv, connectorId, "manual", SYNC_SCOPE_ALL, {}),
+      (syncEnv) => runQueuedConnectorSync(syncEnv, connectorId),
     );
     if (!started) {
       console.warn(
@@ -196,6 +197,19 @@ async function consumeManualSyncMessage(
     }
   }
   message.ack();
+}
+
+async function runQueuedConnectorSync(env: Env, connectorId: ConnectorId) {
+  const run = () =>
+    runConnectorSync(env, connectorId, "manual", SYNC_SCOPE_ALL, {});
+  try {
+    return await run();
+  } catch (error) {
+    // 過期的國泰 OTP 工作階段在登入銀行前即失敗，sync 已清除該工作階段；
+    // 比照原本前端行為以全新登入重試一次。其他錯誤不重試。
+    if (error instanceof CathayOtpSessionExpiredError) return run();
+    throw error;
+  }
 }
 
 async function consumeTdccChunkMessage(

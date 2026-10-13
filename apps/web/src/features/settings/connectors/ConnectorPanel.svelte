@@ -130,7 +130,9 @@
     if (
       connectorId === "cathaybk" &&
       interruptedSync === null &&
-      !$sync.isPending
+      !$sync.isPending &&
+      !$requestCathayOtp.isPending &&
+      !$verifyCathayOtp.isPending
     )
       startBackgroundSyncPolling(job.lastRunAt ?? null, false);
     if (connectorId === "einvoice" && einvoiceSyncPolling === null)

@@ -44,6 +44,7 @@ import {
   DEMO_MODE_PARKED_CHUNK_DELAY_SECONDS,
   enqueueScheduledSync,
 } from "../../../src/features/sync/scheduling/queue";
+import { CathayOtpSessionExpiredError } from "../../../src/sources/cathaybk/connector";
 
 function queueMessage(body: ScheduledSyncQueueMessage) {
   return {
@@ -168,6 +169,29 @@ describe("scheduled sync queue", () => {
       "all",
       {},
     );
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+  });
+
+  it("國泰 OTP 工作階段過期時只以全新登入重試一次", async () => {
+    mocks.runQueuedManualSync.mockImplementation(
+      async (_env, _connectorId, _runId, task) => {
+        await task({} as Env);
+        return true;
+      },
+    );
+    mocks.runConnectorSync
+      .mockRejectedValueOnce(new CathayOtpSessionExpiredError())
+      .mockResolvedValueOnce({ newRecords: 0 });
+    const message = queueMessage({
+      type: "run-manual-sync",
+      connectorId: "cathaybk",
+      runId: "manual-run-1",
+    });
+
+    await consumeScheduledSyncQueue(queueBatch(message), env());
+
+    expect(mocks.runConnectorSync).toHaveBeenCalledTimes(2);
     expect(message.ack).toHaveBeenCalledOnce();
     expect(message.retry).not.toHaveBeenCalled();
   });
