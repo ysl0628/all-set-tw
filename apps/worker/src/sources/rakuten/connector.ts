@@ -8,7 +8,14 @@ import type { SyncResult } from "../types";
  * - 不復用 session／cookie：每次同步都重新登入，結束一律 browser.close()；
  *   只有 prepare 階段 disconnect，保留瀏覽器給使用者輸入驗證碼。
  */
-import { BrowserRunCapacityError, launchBrowserWithRetry } from "../browser.js";
+import {
+  BrowserRunCapacityError,
+  launchBrowserWithRetry,
+  connectBrowserWithCancellation,
+  prepareBrowserLoginWithRetry,
+  closeBrowserSession,
+  type ReportBrowserLoginStage,
+} from "../browser.js";
 import puppeteer, {
   type Browser,
   type Dialog,
@@ -25,8 +32,9 @@ const LOGIN_API_PATH = "/channel-cgn/CGNOT0001/login";
 const HOME_PATH_MARKER = "/ebank/chm/";
 /** 登入頁路徑（/ebank/cgn/…）；session 失效時會被導回這裡。 */
 const LOGIN_PAGE_PATH = /^\/ebank\/cgn\//i;
-/** 首頁（含臺幣活存）的交易路徑，實際網址前綴為 /ixtein/adapters/ebank/txns。 */
+/** 首頁（含臺幣活存）與貸款總覽的交易路徑，實際網址前綴為 /ixtein/adapters/ebank/txns。 */
 const DASHBOARD_TXN_PATH = "/channel-chm/CHMQU0001/010";
+const LOAN_TXN_PATH = "/channel-cln/CLNQU0001/010";
 /** 臺幣活存明細：010 是當月，011 是月份下拉選單選定的月份（前綴依實際 API，只比對結尾）。 */
 const DEPOSIT_TXN_CURRENT_PATH = "/CTWQU0001/010";
 const DEPOSIT_TXN_MONTH_PATH = "/CTWQU0001/011";
@@ -46,11 +54,13 @@ const STALE_SESSION_RELEASE_TIMEOUT_MS = 3_000;
 const SYNC_DEADLINE_MS = 55_000;
 /**
  * 活存明細與其後解析階段的期限。手動同步是一般 HTTP 請求、同步鎖 30 分鐘、排程 15
- * 分鐘，沒有 60 秒硬限制；多出的 20 秒只給活存明細用，登入與首頁存款的時限不變
+ * 分鐘，沒有 60 秒硬限制；多出的 20 秒只給活存明細用，登入／貸款的時限不變
  * （仍是 SYNC_DEADLINE_MS）。
  */
 const DEPOSIT_TXN_DEADLINE_MS = 75_000;
 const DASHBOARD_TAP_WAIT_MS = 5_000;
+const LOAN_NAV_WAIT_MS = 6_000;
+const LOAN_TERMS_WAIT_MS = 3_000;
 const DEPOSIT_TXN_WAIT_MS = 6_000;
 const DEPOSIT_MENU_SETTLE_MS = 300;
 const DEPOSIT_MONTH_DROPDOWN_SETTLE_MS = 300;
@@ -75,6 +85,7 @@ export type RakutenSyncStage =
   | "configure_browser_page"
   | "login"
   | "fetch_dashboard"
+  | "fetch_loan"
   | "fetch_deposit_transactions"
   | "parse_payload";
 
@@ -84,6 +95,7 @@ const RAKUTEN_SYNC_STAGE_LABELS: Record<RakutenSyncStage, string> = {
   configure_browser_page: "設定瀏覽器頁面",
   login: "登入樂天網銀",
   fetch_dashboard: "取得帳戶存款資訊",
+  fetch_loan: "取得貸款資訊",
   fetch_deposit_transactions: "取得臺幣存款明細",
   parse_payload: "解析帳務資料",
 };
@@ -275,11 +287,15 @@ export function createRakutenConnector(
         loginMode: useManualCaptcha ? "manual" : "ocr",
         ocrAttempts: 0,
         depositSource: "none",
+        loanSource: "none",
         depositAccountCount: 0,
+        loanAccountCount: 0,
+        loanTermCount: 0,
         depositTxnMonthsFetched: 0,
         depositTxnCount: 0,
         loginMs: 0,
         dashboardMs: 0,
+        loanMs: 0,
         depositTxnMs: 0,
         logoutMs: 0,
       };
@@ -295,12 +311,44 @@ export function createRakutenConnector(
         timedStageStartedAt = now;
       };
 
+      const capturedUrls: string[] = [];
+      const onGlobalResponse = (response: HTTPResponse) => {
+        const url = response.url();
+        if (!url.includes("rakuten-bank.com.tw")) return;
+        const path = pathOfUrl(url);
+        if (/\.(js|css|png|jpe?g|svg|ico|woff2?|ttf)$/i.test(path)) return;
+        capturedUrls.push(
+          `${response.request().method()} ${path} (${response.status()})`,
+        );
+      };
+      const initializePage = async (
+        browser: Browser,
+        observePage?: (page: Page) => void,
+        reportStage?: ReportBrowserLoginStage,
+      ) => {
+        stage = "initialize_browser_page";
+        const pages = await browser.pages();
+        const page = pages[0] ?? (await browser.newPage());
+        observePage?.(page);
+        stage = "configure_browser_page";
+        reportStage?.("configure_page");
+        await configurePage(page);
+        // Response bodies remain encrypted here; financial data comes from
+        // the response tap installed by configurePage before navigation.
+        capturedUrls.length = 0;
+        page.on("response", onGlobalResponse);
+        return page;
+      };
+      let initialCapture:
+        Awaited<ReturnType<typeof prepareLoginAndCapture>> | undefined;
+
       try {
         if (useManualCaptcha) {
           browserInstance = await reconnectPreparedBrowser(
             browserFetcher,
             config.browserSessionId!,
           );
+          page = await initializePage(browserInstance);
         } else {
           // 釋放先前人工流程留下、已不會再用到的瀏覽器，避免佔用名額
           if (config.browserSessionId) {
@@ -309,29 +357,42 @@ export function createRakutenConnector(
               config.browserSessionId,
             );
           }
-          browserInstance = await acquireBrowser(browserFetcher);
+          const prepared = await prepareBrowserLoginWithRetry({
+            binding: browserFetcher,
+            connectorId: "rakuten",
+            remainingMs: () =>
+              remainingMs(syncStartedAt, "login") - MIN_OCR_ATTEMPT_MS,
+            isRetryable: (error) =>
+              error instanceof RakutenActionTimeoutError ||
+              (error instanceof RakutenConnectionError &&
+                /^樂天登入頁沒有/.test(error.message)),
+            prepare: async (
+              browser,
+              observePage,
+              _signal,
+              _attempt,
+              reportStage,
+            ) => {
+              const page = await initializePage(
+                browser,
+                observePage,
+                reportStage,
+              );
+              stage = "login";
+              switchTimedStage("loginMs");
+              const capture = await prepareLoginAndCapture(
+                page,
+                config,
+                (ms) => Math.min(ms, remainingMs(syncStartedAt, "login")),
+                reportStage,
+              );
+              return { page, capture };
+            },
+          });
+          browserInstance = prepared.browser;
+          page = prepared.value.page;
+          initialCapture = prepared.value.capture;
         }
-
-        stage = "initialize_browser_page";
-        const pages = await browserInstance.pages();
-        page = pages[0] ?? (await browserInstance.newPage());
-
-        stage = "configure_browser_page";
-        await configurePage(page);
-
-        // 網路層只看得到加密的 rsData，監聽器只用來記錄呼叫過的路徑（空結果診斷）；
-        // 資料一律讀取頁面內攔截到的解密後回應（見 installRakutenResponseTap）。
-        const capturedUrls: string[] = [];
-        const onGlobalResponse = (response: HTTPResponse) => {
-          const url = response.url();
-          if (!url.includes("rakuten-bank.com.tw")) return;
-          const path = pathOfUrl(url);
-          if (/\.(js|css|png|jpe?g|svg|ico|woff2?|ttf)$/i.test(path)) return;
-          capturedUrls.push(
-            `${response.request().method()} ${path} (${response.status()})`,
-          );
-        };
-        page.on("response", onGlobalResponse);
 
         let loggedIn = false;
         try {
@@ -353,6 +414,7 @@ export function createRakutenConnector(
               onAttemptStarted: () => {
                 summary.ocrAttempts += 1;
               },
+              initialCapture,
             });
           }
 
@@ -389,6 +451,57 @@ export function createRakutenConnector(
             depositPageText = await readBodyInnerText(page);
           }
 
+          // --- 貸款：點選單「我的貸款」後 CLNQU0001 解密後的回應 ---
+          stage = "fetch_loan";
+          switchTimedStage("loanMs");
+          let loanPayload: unknown;
+          let loanPageText: string | undefined;
+          if (remainingMs(syncStartedAt, stage) > 2000) {
+            // 首頁登入時已呼叫過一次精簡版（只有名稱與剩餘金額），切頁時首頁
+            // 元件還會再送一次；只等點擊後貸款頁送出、帶有條件（利率、期數、
+            // 下次扣款）的完整版，等不到才退回最新一筆精簡版。
+            // 首頁唯一文字是「貸款總覽」的元素是「編輯常用功能」視窗裡的圖示，
+            // 點它拿不到完整版，所以改點頁首選單的「我的貸款」。
+            const { count: tappedBeforeClick } = await readTappedResponse(
+              page,
+              LOAN_TXN_PATH,
+            );
+            const clicked = await clickRakutenNav(page, { exact: "我的貸款" });
+            if (clicked) {
+              const fullLoanPayload = await waitForTappedResponse(
+                page,
+                LOAN_TXN_PATH,
+                Math.min(LOAN_NAV_WAIT_MS, remainingMs(syncStartedAt, stage)),
+                tappedBeforeClick,
+                { requireLoanTerms: true },
+              );
+              loanPayload =
+                fullLoanPayload ??
+                (await readTappedResponse(page, LOAN_TXN_PATH)).rsData;
+              if (fullLoanPayload !== undefined) {
+                // 完整版已帶條件，不必再讀畫面文字
+              } else if (rakutenPayloadHasLoans(loanPayload)) {
+                // API 只有名稱與剩餘金額；利率、期數、下次扣款從畫面文字補
+                loanPageText = await waitForLoanTermsText(
+                  page,
+                  Math.min(
+                    LOAN_TERMS_WAIT_MS,
+                    remainingMs(syncStartedAt, stage),
+                  ),
+                );
+              } else {
+                console.warn(
+                  JSON.stringify({
+                    event: "rakuten_fallback",
+                    target: "loan",
+                    step: "text",
+                  }),
+                );
+                loanPageText = await readBodyInnerText(page);
+              }
+            }
+          }
+
           // --- 臺幣活存明細：存款 → 臺幣存款，當月加下拉選單往前的月份 ---
           stage = "fetch_deposit_transactions";
           switchTimedStage("depositTxnMs");
@@ -400,7 +513,7 @@ export function createRakutenConnector(
 
           stage = "parse_payload";
           switchTimedStage();
-          // 呼叫底層共用 parser 轉換標準模型；存款優先使用 JSON，取不到才用文字
+          // 呼叫底層共用 parser 轉換標準模型；存款與貸款各自選用 JSON 或文字
           const hasDeposit = (parsed: {
             bankAccounts: { accountType?: string }[];
           }) =>
@@ -409,7 +522,9 @@ export function createRakutenConnector(
             );
           let data = parseRakutenData({
             dashboardPayload,
+            loanPayload,
             depositPageText,
+            loanPageText,
             depositTxnPayloads,
           });
 
@@ -421,7 +536,7 @@ export function createRakutenConnector(
                 step: "text_reread",
               }),
             );
-            // 首頁資料沒有帶出存款，切到臺幣存款頁再讀文字（明細抓取後可能已在該頁）
+            // 目前頁面可能已切到貸款頁，先切回臺幣存款再讀文字
             if (remainingMs(syncStartedAt, stage) > 2000) {
               await clickRakutenNav(page, { exact: "臺幣存款" });
               await delay(Math.min(1500, remainingMs(syncStartedAt, stage)));
@@ -429,13 +544,18 @@ export function createRakutenConnector(
             depositPageText = await readBodyInnerText(page);
             data = parseRakutenData({
               dashboardPayload,
+              loanPayload,
               depositPageText,
+              loanPageText,
               depositTxnPayloads,
             });
           }
 
           summary.depositAccountCount = data.bankAccounts.filter(
             (account) => account.accountType === "savings",
+          ).length;
+          summary.loanAccountCount = data.bankAccounts.filter(
+            (account) => account.accountType === "loan",
           ).length;
           summary.depositSource = hasDeposit(
             parseRakutenData({ dashboardPayload }),
@@ -444,7 +564,20 @@ export function createRakutenConnector(
             : hasDeposit(parseRakutenData({ depositPageText }))
               ? "text"
               : "none";
-          // 樂天一定有臺幣活存帳戶；解析不到存款就視為頁面結構改變
+          summary.loanTermCount = data.bankAccounts.filter(
+            (account) =>
+              account.accountType === "loan" &&
+              isRecord(account.raw) &&
+              Object.values(account.raw).some((value) => value !== undefined),
+          ).length;
+          summary.loanSource = rakutenPayloadHasLoans(loanPayload)
+            ? "tap"
+            : summary.loanAccountCount > 0
+              ? "text"
+              : "none";
+
+          // 樂天一定有臺幣活存帳戶；解析不到存款就視為頁面結構改變，不以
+          // 只有貸款的部分結果當作成功
           if (!hasDeposit(data)) {
             if (LOGIN_PAGE_PATH.test(pathOfUrl(page.url()))) {
               loggedIn = false;
@@ -494,7 +627,8 @@ export function createRakutenConnector(
         outcome = normalized.name;
         throw normalized;
       } finally {
-        if (browserInstance) await closeRakutenBrowser(browserInstance);
+        if (browserInstance)
+          await closeRakutenBrowser(browserInstance, browserFetcher);
         // 整次同步一筆摘要（資訊類，不含帳號、餘額等值）。此處已在登出與關閉瀏覽器
         // 之後，所以 logoutMs 一定已寫入 summary
         console.log(
@@ -517,7 +651,11 @@ type RakutenSyncSummary = {
   loginMode: "manual" | "ocr";
   ocrAttempts: number;
   depositSource: RakutenDataSource;
+  loanSource: RakutenDataSource;
   depositAccountCount: number;
+  loanAccountCount: number;
+  /** 帶有條件（利率、期數等）的貸款數 */
+  loanTermCount: number;
   /** 成功讀到活存明細回應的月份數（不論之後是否解析成功） */
   depositTxnMonthsFetched: number;
   /** 解析出的活存交易筆數 */
@@ -525,11 +663,12 @@ type RakutenSyncSummary = {
   /** 各階段耗時（毫秒）；該階段沒執行到就維持 0 */
   loginMs: number;
   dashboardMs: number;
+  loanMs: number;
   depositTxnMs: number;
   logoutMs: number;
 };
 
-type RakutenTimedStage = "loginMs" | "dashboardMs" | "depositTxnMs";
+type RakutenTimedStage = "loginMs" | "dashboardMs" | "loanMs" | "depositTxnMs";
 
 // ---------------------------------------------------------------------------
 // 讀取網頁自己解密後的 API 回應
@@ -598,6 +737,11 @@ export function installRakutenResponseTap() {
 
 type TappedRead = { count: number; rsData: unknown };
 
+type TappedReadOptions = {
+  /** 只接受貸款項目帶有條件欄位（初始期數）的回應，也就是貸款頁的完整版。 */
+  requireLoanTerms?: boolean;
+};
+
 /**
  * 讀取指定交易最新一筆成功的解密後回應；`afterIndex` 之前記錄的回應不算
  * （用來等「點擊之後」才送出的那一次）。同時回傳目前已記錄的筆數。
@@ -606,10 +750,15 @@ async function readTappedResponse(
   page: Page,
   txnPath: string,
   afterIndex = 0,
+  options: TappedReadOptions = {},
 ): Promise<TappedRead> {
   const read = await withActionTimeout(
     page.evaluate(
-      (input: { suffix: string; afterIndex: number }) => {
+      (input: {
+        suffix: string;
+        afterIndex: number;
+        requireLoanTerms: boolean;
+      }) => {
         const store = (
           window as unknown as {
             __tfhRakutenTap?: { responses: TappedResponse[] };
@@ -624,11 +773,28 @@ async function readTappedResponse(
           ) {
             continue;
           }
+          if (input.requireLoanTerms) {
+            const projects = (entry.rsData as { loanProjects?: unknown })
+              ?.loanProjects;
+            const hasTerms =
+              Array.isArray(projects) &&
+              projects.some(
+                (project) =>
+                  typeof project === "object" &&
+                  project !== null &&
+                  "initPeriod" in project,
+              );
+            if (!hasTerms) continue;
+          }
           return { count: responses.length, rsData: entry.rsData };
         }
         return { count: responses.length, rsData: null };
       },
-      { suffix: txnPath, afterIndex },
+      {
+        suffix: txnPath,
+        afterIndex,
+        requireLoanTerms: options.requireLoanTerms === true,
+      },
     ),
   ).catch(() => null);
   return {
@@ -643,10 +809,16 @@ async function waitForTappedResponse(
   txnPath: string,
   timeoutMs: number,
   afterIndex = 0,
+  options: TappedReadOptions = {},
 ): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const { rsData } = await readTappedResponse(page, txnPath, afterIndex);
+    const { rsData } = await readTappedResponse(
+      page,
+      txnPath,
+      afterIndex,
+      options,
+    );
     if (rsData !== undefined) return rsData;
     if (LOGIN_PAGE_PATH.test(pathOfUrl(page.url()))) return undefined;
     const left = deadline - Date.now();
@@ -815,7 +987,7 @@ function logRakutenTxnSkipped(
  * 選到 BANK_SYNC_MONTHS 個月（每個月 CTWQU0001/011）。
  *
  * 明細只是附加資料：任何一步失敗、逾時或時間不足都只記錄事件並回傳已取得的
- * 月份，絕不讓同步失敗（餘額照常）。回傳的每個元素是一個月份的 rsData。
+ * 月份，絕不讓同步失敗（餘額與貸款照常）。回傳的每個元素是一個月份的 rsData。
  * 目前不分頁：display.dataEnd === false／dataLimit === true 時保留已回傳的資料。
  */
 async function fetchDepositTransactionPayloads(
@@ -1099,7 +1271,7 @@ export async function prepareRakutenCaptcha(
       captchaImage,
     };
   } finally {
-    if (!preserved) await closeRakutenBrowser(browserInstance);
+    if (!preserved) await closeRakutenBrowser(browserInstance, browserFetcher);
   }
 }
 
@@ -1111,11 +1283,14 @@ async function prepareLoginAndCapture(
   page: Page,
   config: RakutenConfig,
   budget: TimeBudget = noBudget,
+  reportStage?: ReportBrowserLoginStage,
 ): Promise<{
   captchaDataUri: string;
   fillCredentials: () => Promise<void>;
 }> {
+  reportStage?.("navigate");
   await gotoAllowingTimeout(page, LOGIN_URL, budget(GOTO_ALLOW_TIMEOUT_MS));
+  reportStage?.("form");
   try {
     await page.waitForFunction(
       () =>
@@ -1140,6 +1315,7 @@ async function prepareLoginAndCapture(
     );
   }
 
+  reportStage?.("captcha");
   const captchaDataUri = await captureCaptchaImage(
     page,
     budget(CAPTCHA_IMAGE_TIMEOUT_MS),
@@ -1346,7 +1522,10 @@ async function loginWithOcr(
   config: RakutenConfig,
   recognizeCaptcha: RakutenCaptchaRecognizer,
   syncStartedAt: number,
-  hooks: { onAttemptStarted?: () => void } = {},
+  hooks: {
+    onAttemptStarted?: () => void;
+    initialCapture?: Awaited<ReturnType<typeof prepareLoginAndCapture>>;
+  } = {},
 ): Promise<void> {
   const budget: TimeBudget = (preferredMs) =>
     Math.min(preferredMs, remainingMs(syncStartedAt, "login"));
@@ -1354,11 +1533,10 @@ async function loginWithOcr(
   await runRakutenOcrAttempts(
     async () => {
       hooks.onAttemptStarted?.();
-      const { captchaDataUri, fillCredentials } = await prepareLoginAndCapture(
-        page,
-        config,
-        budget,
-      );
+      const capture = hooks.initialCapture;
+      hooks.initialCapture = undefined;
+      const { captchaDataUri, fillCredentials } =
+        capture ?? (await prepareLoginAndCapture(page, config, budget));
 
       // 帳密填寫與辨識平行進行；用 allSettled 確保兩者都結束後才往下走，
       // 避免辨識失敗時背景仍在打字、與下一輪的頁面重新載入互相干擾。
@@ -1545,6 +1723,10 @@ function pathOfUrl(url: string): string {
   }
 }
 
+function rakutenPayloadHasLoans(payload: unknown): boolean {
+  return parseRakutenData({ loanPayload: payload }).bankAccounts.length > 0;
+}
+
 async function logRakutenLoginResponse(response: HTTPResponse) {
   let payload: unknown;
   try {
@@ -1619,6 +1801,19 @@ async function clickRakutenNav(
   ).catch(() => false);
 }
 
+/** 等貸款頁畫出「初始貸款金額」等條件後回傳頁面文字；逾時就回傳當下內容。 */
+async function waitForLoanTermsText(
+  page: Page,
+  timeoutMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const text = await readBodyInnerText(page);
+    if (text.includes("初始貸款金額") || Date.now() >= deadline) return text;
+    await delay(Math.min(TAP_POLL_MS, Math.max(0, deadline - Date.now())));
+  }
+}
+
 async function readBodyInnerText(page: Page): Promise<string> {
   return withActionTimeout(
     page.evaluate(() => document.body?.innerText ?? ""),
@@ -1690,7 +1885,7 @@ async function reconnectPreparedBrowser(
     );
   }
   try {
-    return await puppeteer.connect(browserFetcher, sessionId);
+    return await connectBrowserWithCancellation(browserFetcher, sessionId);
   } catch {
     throw new RakutenBrowserCapacityError(
       "前一個樂天驗證工作階段尚未釋放，請稍候再試。",
@@ -1716,7 +1911,10 @@ async function acquireBrowserForPrepare(
     }
     if (preferred) {
       try {
-        return await puppeteer.connect(browserFetcher, preferred.sessionId);
+        return await connectBrowserWithCancellation(
+          browserFetcher,
+          preferred.sessionId,
+        );
       } catch {
         throw new RakutenBrowserCapacityError(
           "前一個樂天驗證工作階段尚未釋放，請稍候再試。",
@@ -1740,8 +1938,11 @@ async function releasePreparedBrowser(
         const sessions = await puppeteer.sessions(browserFetcher);
         const session = sessions.find((item) => item.sessionId === sessionId);
         if (!session || session.connectionId) return;
-        const browser = await puppeteer.connect(browserFetcher, sessionId);
-        await closeRakutenBrowser(browser);
+        const browser = await connectBrowserWithCancellation(
+          browserFetcher,
+          sessionId,
+        );
+        await closeRakutenBrowser(browser, browserFetcher);
       })(),
       STALE_SESSION_RELEASE_TIMEOUT_MS,
       () => new RakutenActionTimeoutError(),
@@ -1772,14 +1973,11 @@ async function acquireBrowser(browserFetcher: Fetcher): Promise<Browser> {
   });
 }
 
-async function closeRakutenBrowser(browser: Browser) {
-  try {
-    await browser.close();
-  } catch (error) {
+async function closeRakutenBrowser(browser: Browser, binding: Fetcher) {
+  if (!(await closeBrowserSession(binding, browser))) {
     console.warn(
       JSON.stringify({
         event: "rakuten_browser_close_failed",
-        errorName: error instanceof Error ? error.name : "UnknownError",
       }),
     );
   }

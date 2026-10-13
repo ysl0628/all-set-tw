@@ -179,13 +179,11 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const { run, created } = await startEinvoiceSyncRun(c.env, {
         trigger: "manual",
       });
-      if (created) {
-        try {
-          await enqueueEinvoiceSyncChunk(c.env, run.id);
-        } catch (error) {
-          await cancelQueuedEinvoiceSyncRun(c.env, run.id, error);
-          throw error;
-        }
+      try {
+        await enqueueEinvoiceSyncChunk(c.env, run.id);
+      } catch (error) {
+        if (created) await cancelQueuedEinvoiceSyncRun(c.env, run.id, error);
+        throw error;
       }
       return c.json(
         {
@@ -263,8 +261,8 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
   api.post("/connectors/esun/sync", async (c) => {
     return syncRouteResponse(
       c,
-      withManualSyncLock(c.env, "esun", SYNC_SCOPE_ALL, () =>
-        runConnectorSync(c.env, "esun", "manual"),
+      withManualSyncLock(c.env, "esun", SYNC_SCOPE_ALL, (syncEnv) =>
+        runConnectorSync(syncEnv, "esun", "manual"),
       ),
     );
   });
@@ -280,9 +278,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "cathaybk", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "cathaybk", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "cathaybk",
             "manual",
             SYNC_SCOPE_ALL,
@@ -296,8 +294,8 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
   api.post("/connectors/ctbc/sync", async (c) => {
     return syncRouteResponse(
       c,
-      withManualSyncLock(c.env, "ctbc", SYNC_SCOPE_ALL, () =>
-        runConnectorSync(c.env, "ctbc", "manual"),
+      withManualSyncLock(c.env, "ctbc", SYNC_SCOPE_ALL, (syncEnv) =>
+        runConnectorSync(syncEnv, "ctbc", "manual"),
       ),
     );
   });
@@ -305,8 +303,8 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
   api.post("/connectors/skbank/sync", async (c) => {
     return syncRouteResponse(
       c,
-      withManualSyncLock(c.env, "skbank", SYNC_SCOPE_ALL, () =>
-        runConnectorSync(c.env, "skbank", "manual"),
+      withManualSyncLock(c.env, "skbank", SYNC_SCOPE_ALL, (syncEnv) =>
+        runConnectorSync(syncEnv, "skbank", "manual"),
       ),
     );
   });
@@ -356,9 +354,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "sinopac", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "sinopac", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "sinopac",
             "manual",
             SYNC_SCOPE_ALL,
@@ -409,9 +407,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "taishin", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "taishin", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "taishin",
             "manual",
             SYNC_SCOPE_ALL,
@@ -464,8 +462,14 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "hncb", SYNC_SCOPE_ALL, () =>
-          runConnectorSync(c.env, "hncb", "manual", SYNC_SCOPE_ALL, overrides),
+        withManualSyncLock(c.env, "hncb", SYNC_SCOPE_ALL, (syncEnv) =>
+          runConnectorSync(
+            syncEnv,
+            "hncb",
+            "manual",
+            SYNC_SCOPE_ALL,
+            overrides,
+          ),
         ),
       );
     },
@@ -517,9 +521,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "rakuten", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "rakuten", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "rakuten",
             "manual",
             SYNC_SCOPE_ALL,
@@ -569,9 +573,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "kgibank", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "kgibank", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "kgibank",
             "manual",
             SYNC_SCOPE_ALL,
@@ -613,9 +617,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "nextbank", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "nextbank", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "nextbank",
             "manual",
             SYNC_SCOPE_ALL,
@@ -661,8 +665,14 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "obank", SYNC_SCOPE_ALL, () =>
-          runConnectorSync(c.env, "obank", "manual", SYNC_SCOPE_ALL, overrides),
+        withManualSyncLock(c.env, "obank", SYNC_SCOPE_ALL, (syncEnv) =>
+          runConnectorSync(
+            syncEnv,
+            "obank",
+            "manual",
+            SYNC_SCOPE_ALL,
+            overrides,
+          ),
         ),
       );
     },
@@ -718,9 +728,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "firstbank", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "firstbank", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "firstbank",
             "manual",
             SYNC_SCOPE_ALL,
@@ -769,9 +779,9 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       const overrides = c.req.valid("json");
       return syncRouteResponse(
         c,
-        withManualSyncLock(c.env, "megabank", SYNC_SCOPE_ALL, () =>
+        withManualSyncLock(c.env, "megabank", SYNC_SCOPE_ALL, (syncEnv) =>
           runConnectorSync(
-            c.env,
+            syncEnv,
             "megabank",
             "manual",
             SYNC_SCOPE_ALL,

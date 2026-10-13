@@ -1,6 +1,8 @@
 import type { ConnectorId } from "@taiwan-fin-hub/shared";
 import { nextSyncRunAt, type SyncScheduleMode } from "../../../db";
 import { getActiveEinvoiceRun } from "../../../sources/einvoice/run-repository";
+import { getActiveTdccRun } from "../../../sources/tdcc/run-repository";
+import { durableRunState } from "../run-state";
 import {
   findDefaultSyncSchedule,
   findSyncJob,
@@ -24,7 +26,7 @@ export async function setDefaultSyncSchedule(
   input: {
     intervalMinutes: number;
     preferredTime: string;
-    preferredWeekday: number;
+    preferredWeekdays: number[];
   },
 ) {
   const now = new Date();
@@ -39,12 +41,13 @@ export async function setDefaultSyncSchedule(
         input.preferredTime,
         now,
         job.nextRunAt,
-        input.preferredWeekday,
+        input.preferredWeekdays,
       ),
     })),
   });
   return {
     ...input,
+    preferredWeekday: input.preferredWeekdays[0],
     timezone: "Asia/Taipei" as const,
     updatedAt: now.toISOString(),
   };
@@ -53,15 +56,39 @@ export async function setDefaultSyncSchedule(
 export async function getSyncJobs(db: D1Database) {
   const rows = await listSyncJobs(db);
   const now = new Date();
-  const activeEinvoiceRun = await getActiveEinvoiceRun(db);
-  return rows.map((row) => ({
-    ...row,
-    configured: Boolean(row.configured),
-    enabled: Boolean(row.enabled),
-    running:
-      (row.connectorId === "einvoice" && Boolean(activeEinvoiceRun)) ||
-      Boolean(row.lockedUntil && new Date(row.lockedUntil) > now),
-  }));
+  const [activeEinvoiceRun, activeTdccRun] = await Promise.all([
+    getActiveEinvoiceRun(db),
+    getActiveTdccRun(db),
+  ]);
+  return rows.map((row) => {
+    const run =
+      row.connectorId === "einvoice"
+        ? activeEinvoiceRun
+        : row.connectorId === "tdcc"
+          ? activeTdccRun
+          : null;
+    const locked = Boolean(row.lockedUntil && new Date(row.lockedUntil) > now);
+    const state = run ? durableRunState(run, now.getTime()) : null;
+    return {
+      ...row,
+      configured: Boolean(row.configured),
+      enabled: Boolean(row.enabled),
+      lockScope: run ? ("scope" in run ? run.scope : "all") : row.lockScope,
+      lockTrigger: run?.trigger ?? row.lockTrigger,
+      running: Boolean(run) || locked,
+      runId: state?.runId ?? (locked ? row.lockedBy : null),
+      phase: state?.phase ?? (locked ? "processing" : null),
+      lastProgressAt: state?.lastProgressAt ?? (locked ? row.updatedAt : null),
+      retryAfterSeconds:
+        state?.retryAfterSeconds ??
+        (locked
+          ? Math.max(
+              1,
+              Math.ceil((Date.parse(row.lockedUntil!) - now.getTime()) / 1000),
+            )
+          : 0),
+    };
+  });
 }
 
 export type UpdateSyncJobInput = {
@@ -70,6 +97,7 @@ export type UpdateSyncJobInput = {
   intervalMinutes?: number;
   preferredTime?: string;
   preferredWeekday?: number;
+  preferredWeekdays?: number[];
   scheduleMode?: SyncScheduleMode;
 };
 
@@ -91,15 +119,18 @@ export async function editSyncJob(
     job.interval_minutes;
   const preferredTime =
     defaultSchedule?.preferredTime ?? input.preferredTime ?? job.preferred_time;
-  const preferredWeekday =
-    defaultSchedule?.preferredWeekday ??
-    input.preferredWeekday ??
-    job.preferred_weekday;
+  const preferredWeekdays =
+    defaultSchedule?.preferredWeekdays ??
+    input.preferredWeekdays ??
+    (input.preferredWeekday !== undefined
+      ? [input.preferredWeekday]
+      : job.preferred_weekdays);
   const scheduleChanged =
     input.scheduleMode !== undefined ||
     input.intervalMinutes !== undefined ||
     input.preferredTime !== undefined ||
-    input.preferredWeekday !== undefined;
+    input.preferredWeekday !== undefined ||
+    input.preferredWeekdays !== undefined;
   const nextRunAt =
     input.nextRunAt ??
     (scheduleChanged || input.enabled === true
@@ -108,7 +139,7 @@ export async function editSyncJob(
           preferredTime,
           now,
           job.next_run_at,
-          preferredWeekday,
+          preferredWeekdays,
         )
       : job.next_run_at);
   if (
@@ -118,7 +149,7 @@ export async function editSyncJob(
       intervalMinutes,
       scheduleMode,
       preferredTime,
-      preferredWeekday,
+      preferredWeekdays,
       updatedAt: now.toISOString(),
     }))
   )
@@ -130,7 +161,8 @@ export async function editSyncJob(
     enabled: input.enabled ?? Boolean(job.enabled),
     intervalMinutes,
     preferredTime,
-    preferredWeekday,
+    preferredWeekday: preferredWeekdays[0],
+    preferredWeekdays,
     scheduleMode,
     nextRunAt,
   };

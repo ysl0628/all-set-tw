@@ -21,8 +21,11 @@
   import Input from "@/shared/ui/Input.svelte";
   import Select from "@/shared/ui/Select.svelte";
   import TimePicker from "@/shared/ui/TimePicker.svelte";
+  import WeekdayPicker from "../components/WeekdayPicker.svelte";
+  import { formatScheduleWeekdays } from "../model/schedule";
   import type { ApiClient } from "@/shared/api/client";
   import { ApiRequestError } from "@/shared/api/client";
+  import { isRequestInterrupted } from "@/shared/api/interrupted";
   import { queryKeys } from "@/shared/api/query-keys";
   import {
     connectorSettingsQuery,
@@ -105,12 +108,29 @@
   let tdccSyncPolling = $state<"awaiting-active" | "active" | null>(null);
   let tdccSyncPreviousLastRunAt = $state<string | null>(null);
   let tdccSyncPollingTimer: ReturnType<typeof setTimeout> | undefined;
+  // 手動同步是一個長請求；iPhone 鎖定畫面時 Safari 會中斷它（"Load failed"），但伺服器仍會跑完。
+  // 這時改為輪詢同步工作狀態，等背景結果出來再更新畫面，不把連線中斷當成同步失敗。
+  let interruptedSync = $state<"polling" | "timeout" | null>(null);
+  let interruptedSyncPreviousLastRunAt: string | null = null;
+  let interruptedSyncDeadline = 0;
+  let interruptedSyncEnableSchedule = false;
+  let interruptedSyncTimer: ReturnType<typeof setTimeout> | undefined;
+  let syncStartLastRunAt: string | null = null;
+  let syncStartJobKnown = false;
   let destroyed = false;
   const job = $derived(
     ($jobs.data ?? []).find(
       (j) => j.connectorId === connectorId && j.scope === "all",
     ),
   );
+  const syncBusy = $derived(Boolean(job?.running && job.phase !== "stalled"));
+  $effect(() => {
+    if (!job?.running || destroyed) return;
+    if (connectorId === "einvoice" && einvoiceSyncPolling === null)
+      startEinvoiceSyncPolling();
+    if (connectorId === "tdcc" && tdccSyncPolling === null)
+      startTdccSyncPolling();
+  });
   const browserBank = $derived(
     connectorId === "sinopac" ||
       connectorId === "taishin" ||
@@ -162,15 +182,6 @@
     { label: "每天", minutes: 1440 },
     { label: "每週", minutes: 10080 },
   ];
-  const weekdayOptions = [
-    "週日",
-    "週一",
-    "週二",
-    "週三",
-    "週四",
-    "週五",
-    "週六",
-  ];
 
   onMount(() =>
     settings.subscribe((result) => {
@@ -209,10 +220,24 @@
         : 0;
       updateMegabankOtpCountdown();
     }, 1_000);
-    return () => clearInterval(timer);
+    const onVisible = () => {
+      if (
+        document.visibilityState === "visible" &&
+        interruptedSync === "polling"
+      ) {
+        clearTimeout(interruptedSyncTimer);
+        void pollInterruptedSync();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   });
   onDestroy(() => {
     destroyed = true;
+    stopInterruptedSyncPolling();
     clearTimeout(einvoiceSyncQueuedTimer);
     stopEinvoiceSyncPolling();
     clearTimeout(tdccSyncQueuedTimer);
@@ -259,6 +284,9 @@
           ? `/api/connectors/${connectorId}/sync/${target}`
           : `/api/connectors/${connectorId}/sync`;
       pendingSyncTarget = target;
+      // 送出前的 lastRunAt 是請求中斷時分辨背景結果的基準；狀態尚未載入時沒有基準。
+      syncStartJobKnown = Boolean(job);
+      syncStartLastRunAt = job?.lastRunAt ?? null;
       const runSync = () =>
         connectorId === "einvoice" || connectorId === "tdcc"
           ? api.post<QueuedSyncResponse>(path, {})
@@ -297,38 +325,13 @@
         tdccSetupStep = "complete";
         return;
       }
-      invalidateLatestSyncReport();
-      qc.invalidateQueries({ queryKey: queryKeys.syncJobs });
-      qc.invalidateQueries({ queryKey: queryKeys.summary });
-      enableScheduleAfterSuccessfulSync(context.enableSchedule);
-      qc.invalidateQueries({ queryKey: queryKeys.exchangeRates });
-      if (
-        connectorId === "esun" ||
-        connectorId === "cathaybk" ||
-        connectorId === "ctbc"
-      ) {
-        qc.invalidateQueries({ queryKey: queryKeys.bank });
-        if (connectorId !== "esun")
-          qc.invalidateQueries({ queryKey: queryKeys.bills });
-      } else if (browserBank) {
-        qc.invalidateQueries({
-          queryKey: queryKeys.connectorSettings(connectorId),
-        });
-        qc.invalidateQueries({ queryKey: queryKeys.bank });
-        qc.invalidateQueries({ queryKey: queryKeys.bills });
-      } else {
-        if (
-          pendingSyncTarget === "default" ||
-          pendingSyncTarget === "investments"
-        )
-          qc.invalidateQueries({ queryKey: queryKeys.investments });
-        if (pendingSyncTarget === "default" || pendingSyncTarget === "trades")
-          qc.invalidateQueries({ queryKey: queryKeys.investmentTransactions });
-        if (pendingSyncTarget === "default" || pendingSyncTarget === "bank")
-          qc.invalidateQueries({ queryKey: queryKeys.bank });
-      }
+      refreshAfterManualSync(context.enableSchedule);
     },
-    onError: (e) => {
+    onError: (e, _target, context) => {
+      if (isRequestInterrupted(e)) {
+        startInterruptedSyncPolling(context?.enableSchedule ?? false);
+        return;
+      }
       if (handleTdccVerificationRequired(e)) return;
       if (handleCathayVerificationRequired(e)) return;
       if (connectorId === "megabank" && isMegabankOtpRequired(e)) {
@@ -784,6 +787,94 @@
       tdccSyncQueued = false;
     }, 5_000);
   }
+  function refreshAfterManualSync(enableSchedule: boolean) {
+    invalidateLatestSyncReport();
+    qc.invalidateQueries({ queryKey: queryKeys.syncJobs });
+    qc.invalidateQueries({ queryKey: queryKeys.summary });
+    enableScheduleAfterSuccessfulSync(enableSchedule);
+    qc.invalidateQueries({ queryKey: queryKeys.exchangeRates });
+    if (
+      connectorId === "esun" ||
+      connectorId === "cathaybk" ||
+      connectorId === "ctbc"
+    ) {
+      qc.invalidateQueries({ queryKey: queryKeys.bank });
+      if (connectorId !== "esun")
+        qc.invalidateQueries({ queryKey: queryKeys.bills });
+    } else if (browserBank) {
+      qc.invalidateQueries({
+        queryKey: queryKeys.connectorSettings(connectorId),
+      });
+      qc.invalidateQueries({ queryKey: queryKeys.bank });
+      qc.invalidateQueries({ queryKey: queryKeys.bills });
+    } else {
+      if (
+        pendingSyncTarget === "default" ||
+        pendingSyncTarget === "investments"
+      )
+        qc.invalidateQueries({ queryKey: queryKeys.investments });
+      if (pendingSyncTarget === "default" || pendingSyncTarget === "trades")
+        qc.invalidateQueries({ queryKey: queryKeys.investmentTransactions });
+      if (pendingSyncTarget === "default" || pendingSyncTarget === "bank")
+        qc.invalidateQueries({ queryKey: queryKeys.bank });
+    }
+  }
+  function startInterruptedSyncPolling(enableSchedule: boolean) {
+    error = "";
+    if (!syncStartJobKnown) {
+      // 沒有送出前的基準，無法分辨背景結果是否屬於這次同步，不猜測。
+      interruptedSync = "timeout";
+      qc.invalidateQueries({ queryKey: queryKeys.syncJobs });
+      return;
+    }
+    interruptedSync = "polling";
+    interruptedSyncEnableSchedule = enableSchedule;
+    interruptedSyncPreviousLastRunAt = syncStartLastRunAt;
+    interruptedSyncDeadline = Date.now() + 5 * 60_000;
+    clearTimeout(interruptedSyncTimer);
+    void pollInterruptedSync();
+  }
+  function stopInterruptedSyncPolling() {
+    clearTimeout(interruptedSyncTimer);
+    interruptedSyncTimer = undefined;
+  }
+  async function pollInterruptedSync() {
+    const syncJobs = await qc
+      .fetchQuery({ ...syncJobsQuery(() => api), staleTime: 0 })
+      .catch(() => undefined);
+    if (destroyed || interruptedSync !== "polling") return;
+    const current = syncJobs?.find(
+      (syncJob) =>
+        syncJob.connectorId === connectorId && syncJob.scope === "all",
+    );
+    if (
+      current &&
+      !current.running &&
+      current.lastRunAt !== interruptedSyncPreviousLastRunAt
+    ) {
+      interruptedSync = null;
+      stopInterruptedSyncPolling();
+      if (current.lastStatus === "success") {
+        refreshAfterManualSync(interruptedSyncEnableSchedule);
+      } else {
+        error = current.lastError?.trim() || "同步失敗";
+        if (browserBank)
+          qc.invalidateQueries({
+            queryKey: queryKeys.connectorSettings(connectorId),
+          });
+      }
+      return;
+    }
+    if (Date.now() > interruptedSyncDeadline) {
+      interruptedSync = "timeout";
+      stopInterruptedSyncPolling();
+      return;
+    }
+    interruptedSyncTimer = setTimeout(
+      () => void pollInterruptedSync(),
+      document.visibilityState === "visible" ? 3_000 : 10_000,
+    );
+  }
   function startEinvoiceSyncPolling() {
     einvoiceSyncPolling = "awaiting-active";
     einvoiceSyncPreviousLastRunAt = job?.lastRunAt ?? null;
@@ -1007,6 +1098,8 @@
                 cathayVerificationStep === "sms"))}
           onclick={() => {
             error = "";
+            interruptedSync = null;
+            stopInterruptedSyncPolling();
             $sync.mutate("default");
           }}
           ><RefreshCw
@@ -1056,7 +1149,7 @@
           <p class="mt-1 text-sm">
             取得後會在下方顯示圖片與輸入欄，請勿重複點擊。
           </p>
-        {:else if $sync.isPending || $verifyBrowserBank.isPending || job?.running}
+        {:else if $sync.isPending || $verifyBrowserBank.isPending || syncBusy}
           <p role="status" class="font-semibold">正在登入並查詢帳戶…</p>
           <p class="mt-1 text-sm">尚未完成同步，請勿重複提交。</p>
         {:else if error}
@@ -1099,7 +1192,7 @@
               size="sm"
               disabled={demoMode ||
                 !$settings.data?.credentialsComplete ||
-                job?.running ||
+                syncBusy ||
                 $save.isPending ||
                 $sync.isPending ||
                 $prepareBrowserBank.isPending ||
@@ -1123,7 +1216,7 @@
               variant="outline"
               disabled={demoMode ||
                 !$settings.data?.credentialsComplete ||
-                job?.running ||
+                syncBusy ||
                 $save.isPending ||
                 $sync.isPending ||
                 $prepareBrowserBank.isPending ||
@@ -1207,7 +1300,7 @@
     />
   {/if}
   <div
-    class={`mt-3 rounded-xl border border-ink/10 bg-paper p-3 text-sm ${(connectorId === "tdcc" && !tdccConnectionReady) || (connectorId === "cathaybk" && !cathayConnectionReady && cathayVerificationStep !== "complete") ? "hidden" : ""}`}
+    class={`mt-3 rounded-xl border border-ink/10 bg-paper p-3 text-sm ${(connectorId === "tdcc" && !tdccConnectionReady && !job?.running) || (connectorId === "cathaybk" && !cathayConnectionReady && cathayVerificationStep !== "complete") ? "hidden" : ""}`}
   >
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
@@ -1221,17 +1314,39 @@
                 : "下次同步會自動驗證"}</span
             >{/if}
           {#if job && connectorId !== "nextbank"}<span
-              >狀態：{job.running
-                ? "同步中"
-                : job.lastStatus === "success"
-                  ? "正常"
-                  : job.lastStatus === "failed"
-                    ? "失敗"
-                    : job.lastStatus === "needs_user_action"
-                      ? "需要處理"
-                      : "尚未同步"}</span
+              >狀態：{job.phase === "stalled"
+                ? "同步停滯，可重試"
+                : job.running
+                  ? job.phase === "queued"
+                    ? "等待同步"
+                    : job.phase === "initializing"
+                      ? "正在登入"
+                      : job.phase === "bank"
+                        ? "正在查詢銀行資料"
+                        : job.phase === "trades"
+                          ? "正在查詢投資交易"
+                          : job.phase === "promoting" || job.phase === "promote"
+                            ? "正在儲存結果"
+                            : "同步中"
+                  : job.lastStatus === "success"
+                    ? "正常"
+                    : job.lastStatus === "failed"
+                      ? "失敗"
+                      : job.lastStatus === "needs_user_action"
+                        ? "需要處理"
+                        : "尚未同步"}</span
             >{/if}
         </div>
+        {#if job?.running}
+          <div class="mt-1 text-sm text-muted-foreground" role="status">
+            {#if job.lastProgressAt}<p>
+                最近狀態更新：{formatDateTime(job.lastProgressAt)}
+              </p>{/if}
+            {#if job.phase === "stalled"}<p>
+                工作已停止更新，系統會自動恢復，也可按下方「重試同步」。
+              </p>{/if}
+          </div>
+        {/if}
         {#if job?.lastRunAt && connectorId !== "nextbank"}
           <p class="mt-1 text-sm text-muted-foreground">
             最近嘗試：{formatDateTime(job.lastRunAt)}
@@ -1246,6 +1361,22 @@
           >{job.enabled ? "關閉" : "開啟"}</Button
         >{/if}
     </div>
+    {#if job?.phase === "stalled" && (connectorId === "einvoice" || connectorId === "tdcc")}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={demoMode || $sync.isPending}
+        onclick={() =>
+          $sync.mutate(
+            connectorId === "tdcc" &&
+              (job.lockScope === "bank" ||
+                job.lockScope === "investments" ||
+                job.lockScope === "trades")
+              ? job.lockScope
+              : "default",
+          )}>重試同步</Button
+      >
+    {/if}
 
     {#if connectorId === "nextbank"}
       <p class="mt-2 text-sm text-muted-foreground">
@@ -1278,8 +1409,9 @@
             <span class="font-semibold">跟隨預設：</span>
             {#if $defaultSchedule.data}
               {#if $defaultSchedule.data.intervalMinutes === 10080}
-                每{weekdayOptions[$defaultSchedule.data.preferredWeekday] ??
-                  "週一"}
+                {formatScheduleWeekdays(
+                  $defaultSchedule.data.preferredWeekdays,
+                )}
                 {$defaultSchedule.data.preferredTime} 起
               {:else}
                 {intervalLabel(
@@ -1310,23 +1442,13 @@
             </Select>
           </label>
           {#if job.intervalMinutes === 10080}
-            <label class="grid gap-1 text-sm font-semibold text-ink/70">
-              執行日
-              <Select
-                value={job.preferredWeekday}
-                disabled={demoMode || $updateJob.isPending}
-                onchange={(event: Event) =>
-                  $updateJob.mutate({
-                    preferredWeekday: Number(
-                      (event.currentTarget as HTMLSelectElement).value,
-                    ),
-                  })}
-              >
-                {#each weekdayOptions as weekday, index (weekday)}
-                  <option value={index}>{weekday}</option>
-                {/each}
-              </Select>
-            </label>
+            <WeekdayPicker
+              class="md:col-span-4"
+              value={job.preferredWeekdays}
+              disabled={demoMode || $updateJob.isPending}
+              onchange={(preferredWeekdays) =>
+                $updateJob.mutate({ preferredWeekdays })}
+            />
           {/if}
           {#if job.intervalMinutes >= 1440}
             <label class="grid gap-1 text-sm font-semibold text-ink/70">
@@ -1355,6 +1477,14 @@
           : job?.lastError?.trim()
             ? `上次同步：${job.lastError}`
             : "上次同步失敗，但未取得錯誤原因。"}
+      </p>{/if}
+    {#if interruptedSync}<p
+        class="mt-2 text-sm text-muted-foreground"
+        role="status"
+      >
+        {interruptedSync === "polling"
+          ? "畫面關閉或網路中斷，同步仍在背景進行，完成後會自動更新結果。"
+          : "仍無法確認同步結果，請稍後重新整理頁面查看。"}
       </p>{/if}
   </div>
   <section class="mt-4 overflow-hidden rounded-xl border border-border">

@@ -20,7 +20,9 @@
         "credit_limit": "信用卡或授信帳戶的額度；非授信帳戶通常為 NULL。",
         "opened_date": "銀行提供的定存起息日；來源未提供時為 NULL。",
         "maturity_date": "銀行提供的定存到期日；不作為自動結清的判定條件。",
-        "inactive_at": "同步確認來源不再列出定存的觀測時間，不是銀行實際結清日；有效帳戶為 NULL。"
+        "inactive_at": "同步確認來源不再列出定存的觀測時間，不是銀行實際結清日；有效帳戶為 NULL。",
+        "loan_category": "貸款類別：housing（房屋貸款）、personal（信用貸款）或 other（其他貸款）。",
+        "loan_interest_rate": "貸款年利率百分比；銀行未提供或無法解析時為 NULL。"
       }
     },
     "bank_balance_snapshots": {
@@ -41,7 +43,11 @@
         "statement_balance": "信用卡帳單上的應繳金額。",
         "payment_due_date": "信用卡帳單繳款期限。",
         "no_payment_needed": "是否標示為本期不需要繳款的旗標。",
-        "statement_closing_date": "信用卡帳單結帳日。"
+        "statement_closing_date": "信用卡帳單結帳日。",
+        "loan_payment_amount": "貸款本期應繳金額；來源未提供時為 NULL。",
+        "loan_payment_status": "貸款扣款狀態，例如 scheduled 或 collection_incomplete。",
+        "loan_installments_paid": "貸款已繳期數；來源未提供時為 NULL。",
+        "loan_installments_total": "貸款總期數；來源未提供時為 NULL。"
       }
     },
     "bank_transaction_preferences": {
@@ -369,7 +375,7 @@
       }
     },
     "scheduled_sync_batches": {
-      "description": "追蹤預設排程中需彙總推播的一輪同步工作。",
+      "description": "各排程同步批次的狀態與同步前後資產、信用卡及貸款負債快照。",
       "notes": "同一 schedule_key 同時只保留一個未 claim 批次；建立時固定整輪成員，所有成員完成或略過後只允許一個 scheduler claim 推播。建立新輪次時會清理超過 30 天的已結案批次。",
       "columns": {
         "id": "批次識別碼，由 default 與 UUID 組成。",
@@ -383,7 +389,9 @@
         "missing_currencies_before": "批次開始前缺少匯率、以新台幣 0 元計值的幣別 JSON 陣列。",
         "assets_after_twd": "批次完成後以新臺幣換算的資產總額。",
         "credit_card_debt_after_twd": "批次完成後以新臺幣換算的信用卡負債總額。",
-        "missing_currencies_after": "批次完成後缺少匯率、以新台幣 0 元計值的幣別 JSON 陣列。"
+        "missing_currencies_after": "批次完成後缺少匯率、以新台幣 0 元計值的幣別 JSON 陣列。",
+        "loan_debt_before_twd": "批次開始前以新臺幣換算的貸款負債總額；遷移前建立的報告為 NULL。",
+        "loan_debt_after_twd": "批次完成後以新臺幣換算的貸款負債總額；遷移前建立的報告為 NULL。"
       }
     },
     "sync_jobs": {
@@ -408,7 +416,8 @@
         "updated_at": "同步工作最後更新的時間。",
         "schedule_mode": "排程模式；inherit 使用全域設定，custom 使用工作自己的設定。",
         "preferred_time": "每日或每週排程偏好的台北時間。",
-        "preferred_weekday": "每週排程的星期，0 代表週日、6 代表週六。"
+        "preferred_weekday": "每週排程的單日相容欄位，0 代表週日、6 代表週六；有星期清單時保存清單第一天。",
+        "preferred_weekdays": "每週執行日的 JSON 陣列，0 代表週日、6 代表週六；NULL 沿用 preferred_weekday 單日設定。"
       }
     },
     "sync_schedule_settings": {
@@ -420,7 +429,8 @@
         "preferred_time": "預設每日或每週執行時間，使用台北時間。",
         "timezone": "排程使用的時區，目前為 Asia/Taipei。",
         "updated_at": "全域排程最後更新的時間。",
-        "preferred_weekday": "每週排程的預設星期，0 代表週日、6 代表週六。"
+        "preferred_weekday": "每週排程的預設單日相容欄位，0 代表週日、6 代表週六；有星期清單時保存清單第一天。",
+        "preferred_weekdays": "每週預設執行日的 JSON 陣列，0 代表週日、6 代表週六；NULL 沿用 preferred_weekday 單日設定。"
       }
     },
     "sync_write_staging": {

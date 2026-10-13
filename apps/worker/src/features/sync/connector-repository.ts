@@ -143,6 +143,7 @@ const DIRECT_DEPOSIT_CONNECTOR_IDS = [
   "esun",
   "cathaybk",
   "sinopac",
+  "taishin",
   "ctbc",
   "skbank",
   "obank",
@@ -191,4 +192,26 @@ export function linkCanonicalBankAccountsStatement(
         ? [settingsGuard.connectorId, settingsGuard.encryptedConfig]
         : []),
     );
+}
+
+export function deactivateMissingCathayLoanAccountsStatement(
+  db: D1Database,
+  activeSourceIds: readonly string[],
+  now: string,
+) {
+  return db
+    .prepare(
+      `UPDATE bank_accounts
+       SET inactive_at = ?, updated_at = ?
+       WHERE connector_id = 'cathaybk'
+         AND account_type = 'loan'
+         AND source_id LIKE 'loan:cathaybk:%'
+         AND inactive_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM json_each(?) active
+           WHERE active.value = bank_accounts.source_id
+         )`,
+    )
+    .bind(now, now, JSON.stringify(activeSourceIds));
 }

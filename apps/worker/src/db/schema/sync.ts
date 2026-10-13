@@ -43,6 +43,9 @@ export const syncJobs = sqliteTable(
     preferredWeekday: integer("preferred_weekday")
       .notNull()
       .default(sql`1`),
+    preferredWeekdays: text("preferred_weekdays", { mode: "json" }).$type<
+      number[]
+    >(),
   },
   (table) => [
     primaryKey({ columns: [table.id] }),
@@ -68,6 +71,9 @@ export const syncScheduleSettings = sqliteTable(
     preferredWeekday: integer("preferred_weekday")
       .notNull()
       .default(sql`1`),
+    preferredWeekdays: text("preferred_weekdays", { mode: "json" }).$type<
+      number[]
+    >(),
   },
   (table) => [
     primaryKey({ columns: [table.id] }),
@@ -110,11 +116,13 @@ export const scheduledSyncBatches = sqliteTable(
       .default(sql`0`),
     assetsBeforeTwd: integer("assets_before_twd"),
     creditCardDebtBeforeTwd: integer("credit_card_debt_before_twd"),
+    loanDebtBeforeTwd: integer("loan_debt_before_twd"),
     missingCurrenciesBefore: text("missing_currencies_before")
       .notNull()
       .default(sql`'[]'`),
     assetsAfterTwd: integer("assets_after_twd"),
     creditCardDebtAfterTwd: integer("credit_card_debt_after_twd"),
+    loanDebtAfterTwd: integer("loan_debt_after_twd"),
     missingCurrenciesAfter: text("missing_currencies_after")
       .notNull()
       .default(sql`'[]'`),
