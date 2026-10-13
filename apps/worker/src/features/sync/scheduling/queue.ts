@@ -1,3 +1,4 @@
+import type { ConnectorId } from "@taiwan-fin-hub/shared";
 import type { Env, ScheduledSyncQueueMessage } from "../../../platform/env";
 import { isDemoMode } from "../../../platform/http";
 import { runSchedulerTick } from "./scheduler";
@@ -12,6 +13,10 @@ import {
 } from "../../../sources/tdcc/sync";
 import { isUserActionError, safeErrorMessage } from "../errors";
 import { recoverStalledSyncRuns } from "./recovery";
+import { abandonQueuedManualSync, runQueuedManualSync } from "../manual-sync";
+import { runConnectorSync } from "../registry";
+import { SYNC_SCOPE_ALL } from "../types";
+import { CathayOtpSessionExpiredError } from "../../../sources/cathaybk/connector";
 
 const queueController = {
   cron: "queue:scheduled-sync",
@@ -90,6 +95,10 @@ export async function consumeScheduledSyncQueue(
       await consumeTdccChunkMessage(message, env);
       continue;
     }
+    if (message.body.type === "run-manual-sync") {
+      await consumeManualSyncMessage(message, env);
+      continue;
+    }
     if (message.body.type !== "run-next-scheduled-sync") {
       console.error(
         JSON.stringify({
@@ -127,6 +136,15 @@ async function parkMessageInDemoMode(
       parked,
     }),
   );
+  if (body.type === "run-manual-sync") {
+    // 手動同步不保留到 Demo 關閉後；結束並釋放排入時取得的鎖。
+    await abandonQueuedManualSync(
+      env,
+      body.connectorId,
+      body.runId,
+      "Demo site 已停用連接器同步。",
+    ).catch(() => undefined);
+  }
   if (!parked) {
     message.ack();
     return;
@@ -138,6 +156,59 @@ async function parkMessageInDemoMode(
     message.ack();
   } catch {
     message.retry({ delaySeconds: DEMO_MODE_PARKED_CHUNK_DELAY_SECONDS });
+  }
+}
+
+// 一律 ack、不 retry：重送會再次登入銀行，可能重寄 OTP 或觸發銀行的安全機制。
+// 成功、失敗與需要使用者處理的結果都已由共用流程寫入 sync job。
+async function consumeManualSyncMessage(
+  message: Message<ScheduledSyncQueueMessage>,
+  env: Env,
+) {
+  if (message.body.type !== "run-manual-sync") return;
+  const { connectorId, runId } = message.body;
+  try {
+    const started = await runQueuedManualSync(
+      env,
+      connectorId,
+      runId,
+      (syncEnv) => runQueuedConnectorSync(syncEnv, connectorId),
+    );
+    if (!started) {
+      console.warn(
+        JSON.stringify({
+          event: "manual_sync_queue_skipped",
+          connectorId,
+          runId,
+          reason: "lock_not_owned",
+        }),
+      );
+    }
+  } catch (error) {
+    if (!isUserActionError(error)) {
+      console.error(
+        JSON.stringify({
+          event: "manual_sync_queue_failed",
+          connectorId,
+          runId,
+          error: safeErrorMessage(error),
+        }),
+      );
+    }
+  }
+  message.ack();
+}
+
+async function runQueuedConnectorSync(env: Env, connectorId: ConnectorId) {
+  const run = () =>
+    runConnectorSync(env, connectorId, "manual", SYNC_SCOPE_ALL, {});
+  try {
+    return await run();
+  } catch (error) {
+    // 過期的國泰 OTP 工作階段在登入銀行前即失敗，sync 已清除該工作階段；
+    // 比照原本前端行為以全新登入重試一次。其他錯誤不重試。
+    if (error instanceof CathayOtpSessionExpiredError) return run();
+    throw error;
   }
 }
 

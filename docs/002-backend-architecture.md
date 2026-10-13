@@ -707,6 +707,17 @@ connector lock 保留到報告結果寫入及 run 成功結案；失敗的 run t
 
 `GET /api/sync-jobs` 統一以有效 connector lock 或電子發票／集保 active run 判斷 `running`，並提供 `runId`、`phase`、`lastProgressAt`、`retryAfterSeconds`。durable run 的 `phase = stalled` 表示可補送；有效 chunk lease 的剩餘時間是最短重試等待，不是預估完成時間。一般同步的 `lastProgressAt` 沿用 job 狀態更新時間，可能來自 heartbeat；durable run 則不將 lease renewal 當成進度。
 
+### 背景手動同步
+
+國泰世華一般手動同步需時一分多鐘。若在 HTTP request 內執行，瀏覽器重新整理、切換 App 或網路中斷會讓 Worker 在請求結束約 30 秒後被取消，連 `finally` 都不執行：資料未寫入、結果未記錄，鎖要等過期後由 Cron 清除。因此未附 OTP 的國泰同步改由 Queue 執行：
+
+- API 以 `enqueueManualSync` 取得 canonical lock 後送出 `run-manual-sync`，回傳 202 與 `runId`；已有同步執行中時回傳 409。Queue message 只包含 `connectorId` 與 `runId`，不得攜帶 OTP 或任何憑證。
+- 排入時的租約為 20 分鐘（`QUEUED_MANUAL_SYNC_LEASE_MS`），涵蓋等待前一個 Queue 工作（concurrency 1，最多 10 分鐘）與本次執行；consumer 開始時以同一 `runId` 續租為一般 10 分鐘租約，執行期限自 consumer 開始計算。
+- consumer 與 HTTP 手動同步共用 `runWithManualSyncLock`，記錄成功、失敗或 `needs_user_action`、修復排程報告並釋放鎖。鎖已不屬於此 `runId`（已過期被清除或重複遞送）時不執行。
+- message 一律 ack、不 retry：重送會再次登入銀行，可能重寄 OTP 或觸發銀行的安全機制。結果只看 sync job。唯一例外是國泰 OTP 工作階段已過期：此錯誤在登入銀行前發生，且同步已清除該工作階段，consumer 以全新登入在同一次 invocation 內重試一次，比照原本前端的處理。
+- 送出 message 失敗時記錄失敗並釋放鎖。Demo 模式不執行已排入的手動同步，記錄失敗後釋放鎖並 ack。
+- OTP 寄送與驗證（request body 帶 `otpChannel` 或 `otp`）仍在 request 內執行，以便直接回報驗證結果。
+
 ## 同步結果通知
 
 同步結果通知位於 `apps/worker/src/features/notifications/`，不放入 sync repository。

@@ -110,7 +110,8 @@
   let tdccSyncPollingTimer: ReturnType<typeof setTimeout> | undefined;
   // 手動同步是一個長請求；iPhone 鎖定畫面時 Safari 會中斷它（"Load failed"），但伺服器仍會跑完。
   // 這時改為輪詢同步工作狀態，等背景結果出來再更新畫面，不把連線中斷當成同步失敗。
-  let interruptedSync = $state<"polling" | "timeout" | null>(null);
+  // queued：同步在 Queue 背景執行（國泰），polling：請求中斷但同步可能仍在進行。
+  let interruptedSync = $state<"queued" | "polling" | "timeout" | null>(null);
   let interruptedSyncPreviousLastRunAt: string | null = null;
   let interruptedSyncDeadline = 0;
   let interruptedSyncEnableSchedule = false;
@@ -126,6 +127,14 @@
   const syncBusy = $derived(Boolean(job?.running && job.phase !== "stalled"));
   $effect(() => {
     if (!job?.running || destroyed) return;
+    if (
+      connectorId === "cathaybk" &&
+      interruptedSync === null &&
+      !$sync.isPending &&
+      !$requestCathayOtp.isPending &&
+      !$verifyCathayOtp.isPending
+    )
+      startBackgroundSyncPolling(job.lastRunAt ?? null, false);
     if (connectorId === "einvoice" && einvoiceSyncPolling === null)
       startEinvoiceSyncPolling();
     if (connectorId === "tdcc" && tdccSyncPolling === null)
@@ -223,7 +232,7 @@
     const onVisible = () => {
       if (
         document.visibilityState === "visible" &&
-        interruptedSync === "polling"
+        (interruptedSync === "polling" || interruptedSync === "queued")
       ) {
         clearTimeout(interruptedSyncTimer);
         void pollInterruptedSync();
@@ -288,7 +297,9 @@
       syncStartJobKnown = Boolean(job);
       syncStartLastRunAt = job?.lastRunAt ?? null;
       const runSync = () =>
-        connectorId === "einvoice" || connectorId === "tdcc"
+        connectorId === "einvoice" ||
+        connectorId === "tdcc" ||
+        connectorId === "cathaybk"
           ? api.post<QueuedSyncResponse>(path, {})
           : api.post(path);
       try {
@@ -304,9 +315,13 @@
         throw errorValue;
       }
     },
-    onSuccess: (_data, _target, context) => {
+    onSuccess: (data, _target, context) => {
       error = "";
       if (connectorId === "nextbank") bankOperation = "success";
+      if (connectorId === "cathaybk" && isQueuedSyncResponse(data)) {
+        startBackgroundSyncPolling(syncStartLastRunAt, context.enableSchedule);
+        return;
+      }
       if (connectorId === "cathaybk") {
         resetCathayVerification();
         cathayVerificationStep = "complete";
@@ -819,6 +834,27 @@
         qc.invalidateQueries({ queryKey: queryKeys.bank });
     }
   }
+  function isQueuedSyncResponse(data: unknown): data is QueuedSyncResponse {
+    return (
+      typeof data === "object" &&
+      data !== null &&
+      (data as { status?: unknown }).status === "queued"
+    );
+  }
+  /** 追蹤 Queue 背景同步；可離開頁面，回來時依 sync job 狀態接續。 */
+  function startBackgroundSyncPolling(
+    previousLastRunAt: string | null,
+    enableSchedule: boolean,
+  ) {
+    error = "";
+    interruptedSync = "queued";
+    interruptedSyncEnableSchedule = enableSchedule;
+    interruptedSyncPreviousLastRunAt = previousLastRunAt;
+    // 排入後可能等待前一個 Queue 工作，期限與排入時取得的鎖租約一致。
+    interruptedSyncDeadline = Date.now() + 20 * 60_000;
+    clearTimeout(interruptedSyncTimer);
+    void pollInterruptedSync();
+  }
   function startInterruptedSyncPolling(enableSchedule: boolean) {
     error = "";
     if (!syncStartJobKnown) {
@@ -842,7 +878,11 @@
     const syncJobs = await qc
       .fetchQuery({ ...syncJobsQuery(() => api), staleTime: 0 })
       .catch(() => undefined);
-    if (destroyed || interruptedSync !== "polling") return;
+    if (
+      destroyed ||
+      (interruptedSync !== "polling" && interruptedSync !== "queued")
+    )
+      return;
     const current = syncJobs?.find(
       (syncJob) =>
         syncJob.connectorId === connectorId && syncJob.scope === "all",
@@ -854,8 +894,18 @@
     ) {
       interruptedSync = null;
       stopInterruptedSyncPolling();
+      if (connectorId === "cathaybk")
+        qc.invalidateQueries({
+          queryKey: queryKeys.connectorSettings(connectorId),
+        });
       if (current.lastStatus === "success") {
         refreshAfterManualSync(interruptedSyncEnableSchedule);
+      } else if (
+        connectorId === "cathaybk" &&
+        current.lastStatus === "needs_user_action"
+      ) {
+        // 驗證步驟由連接器設定還原（選擇驗證方式／輸入驗證碼）。
+        error = "";
       } else {
         error = current.lastError?.trim() || "同步失敗";
         if (browserBank)
@@ -1091,6 +1141,7 @@
           disabled={demoMode ||
             $sync.isPending ||
             (connectorId === "einvoice" && einvoiceSyncPolling !== null) ||
+            (connectorId === "cathaybk" && syncBusy) ||
             (connectorId === "cathaybk" &&
               !cathayVerificationExpired &&
               (cathayVerificationStep === "choose" ||
@@ -1110,7 +1161,9 @@
               ? "已排入同步"
               : connectorId === "einvoice" && einvoiceSyncPolling
                 ? "同步中…"
-                : "同步"}</Button
+                : connectorId === "cathaybk" && syncBusy
+                  ? "同步中…"
+                  : "同步"}</Button
         >
       {/if}
     </div>
@@ -1482,9 +1535,11 @@
         class="mt-2 text-sm text-muted-foreground"
         role="status"
       >
-        {interruptedSync === "polling"
-          ? "畫面關閉或網路中斷，同步仍在背景進行，完成後會自動更新結果。"
-          : "仍無法確認同步結果，請稍後重新整理頁面查看。"}
+        {interruptedSync === "queued"
+          ? "同步正在背景進行，約需一至兩分鐘；可以離開此頁，完成後會自動更新結果。"
+          : interruptedSync === "polling"
+            ? "畫面關閉或網路中斷，同步仍在背景進行，完成後會自動更新結果。"
+            : "仍無法確認同步結果，請稍後重新整理頁面查看。"}
       </p>{/if}
   </div>
   <section class="mt-4 overflow-hidden rounded-xl border border-border">

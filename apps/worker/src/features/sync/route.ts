@@ -1,3 +1,4 @@
+import type { ConnectorId } from "@taiwan-fin-hub/shared";
 import { CtbcConnectionError } from "../../sources/ctbc/mobile-api";
 import { EInvoiceProtocolUnavailableError } from "../../sources/einvoice/api";
 import {
@@ -77,7 +78,7 @@ import {
   TDCC_SCOPE_TRADES,
   type SyncOutcome,
 } from "./types";
-import { withManualSyncLock } from "./manual-sync";
+import { enqueueManualSync, withManualSyncLock } from "./manual-sync";
 import { prepareConnectorChallenge, runConnectorSync } from "./registry";
 import {
   cancelQueuedTdccSyncRun,
@@ -276,6 +277,11 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
     ),
     async (c) => {
       const overrides = c.req.valid("json");
+      // 一般同步需時一分多鐘，改由 Queue 背景執行，避免瀏覽器斷線讓 Worker 中途被取消。
+      // OTP 寄送與驗證仍在請求內執行，以便直接回報驗證結果。
+      if (!overrides.otp && !overrides.otpChannel) {
+        return queuedManualSyncResponse(c, "cathaybk");
+      }
       return syncRouteResponse(
         c,
         withManualSyncLock(c.env, "cathaybk", SYNC_SCOPE_ALL, (syncEnv) =>
@@ -916,6 +922,30 @@ async function queuedTdccSyncResponse(
     );
   } catch (error) {
     return syncRouteResponse(c, Promise.reject(error) as Promise<SyncOutcome>);
+  }
+}
+
+async function queuedManualSyncResponse(
+  c: Context<AppBindings>,
+  connectorId: ConnectorId,
+) {
+  try {
+    const runId = await enqueueManualSync(c.env, connectorId);
+    return c.json(
+      {
+        success: true as const,
+        connectorId,
+        scope: SYNC_SCOPE_ALL,
+        status: "queued" as const,
+        runId,
+      },
+      202,
+    );
+  } catch (error) {
+    if (error instanceof SyncAlreadyRunningError) {
+      return jsonError("SYNC_ALREADY_RUNNING", safeErrorMessage(error), 409);
+    }
+    throw error;
   }
 }
 
