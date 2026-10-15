@@ -3,6 +3,7 @@ import puppeteer, { type Browser, type Page } from "@cloudflare/puppeteer";
 import {
   BrowserRunCapacityError,
   BrowserSessionCleanupError,
+  launchBrowserWithRetry,
   prepareBrowserLoginWithRetry,
 } from "../../src/sources/browser";
 
@@ -811,6 +812,33 @@ describe("Browser Run 登入前復原與用量限制", () => {
     await failed;
     expect(preparationSignal?.aborted).toBe(true);
     expect(puppeteer.launch).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("launchBrowserWithRetry", () => {
+  afterEach(() => vi.mocked(puppeteer.launch).mockReset());
+
+  it("ignores a syncSignal property that is not an AbortSignal", async () => {
+    // 未包裝的 Browser binding 是 Fetcher RPC stub，任意屬性都會回傳 stub。
+    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const binding = new Proxy(
+      { fetch },
+      {
+        get: (target, key) =>
+          key in target ? Reflect.get(target, key) : () => undefined,
+      },
+    ) as unknown as Fetcher;
+    const browser = browserSession("session-1");
+    vi.mocked(puppeteer.launch).mockImplementation(async (endpoint) => {
+      await (endpoint as unknown as Fetcher).fetch(
+        "https://browser.example/v1/devtools/browser",
+        { method: "POST" },
+      );
+      return browser;
+    });
+
+    await expect(launchBrowserWithRetry(binding)).resolves.toBe(browser);
     expect(fetch).toHaveBeenCalledOnce();
   });
 });

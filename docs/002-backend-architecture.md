@@ -63,12 +63,25 @@ apps/
 shared/
 ├── package.json
 ├── tsconfig.json
-├── index.ts
-├── financial-types.ts
-├── api-types.ts
-├── bank-api.ts
+├── index.ts               # 唯一匯出入口
 ├── connector-catalog.ts
-└── activity-*.ts
+├── exchange-rates.ts
+├── api/                   # 前後端 HTTP 契約，依 API resource 分檔
+│   ├── errors.ts
+│   ├── bank.ts
+│   ├── classification.ts
+│   ├── connectors.ts
+│   ├── dashboard.ts
+│   ├── notifications.ts
+│   ├── sync.ts
+│   └── sync-reports.ts
+└── activity/              # 活動配對、去重、排序與資料組裝的純邏輯
+    ├── types.ts
+    ├── list.ts
+    ├── flow.ts
+    ├── filter.ts
+    ├── items.ts
+    └── matching.ts
 ```
 
 npm workspaces 僅保留 Web、Worker 與根目錄的 `shared/`。`shared/` 以 `@taiwan-fin-hub/shared` 提供跨前後端共用的型別、契約與純邏輯。資料庫與連接器是 Worker 內部模組，共用相依宣告與型別檢查；透過目錄維持資料存取、外部協定與平台 adapter 的責任分工。
@@ -243,23 +256,28 @@ Middleware 應只處理跨功能的 request concern，不應承擔 feature 商�
 
 實體目錄集中不改變相依邊界：`sync.ts` 可依賴 connector、protocol、client、repository 與明確的共用 service；protocol／client 不得依賴 Hono、D1、Worker `Env`、adapter 或同步流程，也不得直接寫入資料庫。來源之間不引用彼此的內部實作。
 
-`sources` 根目錄只保留跨來源使用的能力：`browser.ts` 管 browser acquisition、capacity 錯誤、登入前頁面停滯復原與有期限的 session 清理，`types.ts` 定義後端 `Connector`／`SyncResult`，`sync-window.ts` 與 `credit-card-status.ts` 提供共同 policy／判斷。`config-registry.ts` 直接引用各來源的純 schema，供設定 feature 使用；同步 handler 仍由 `features/sync/registry.ts` 組裝。Worker 與測試直接引用來源檔案，不建立跨來源的實作匯出入口。
+`sources` 根目錄只保留跨來源使用的能力：`browser.ts` 管 browser acquisition、capacity 錯誤、登入前頁面停滯復原與有期限的 session 清理，`types.ts` 定義後端 `Connector`／`SyncResult`，`financial-types.ts` 定義 connector 正規化後的金融資料（`BankAccount`、`BankTransaction`、`CreditCardBill`、`Invoice` 等），`sync-window.ts` 與 `credit-card-status.ts` 提供共同 policy／判斷。`config-registry.ts` 直接引用各來源的純 schema，供設定 feature 使用；同步 handler 仍由 `features/sync/registry.ts` 組裝。Worker 與測試直接引用來源檔案，不建立跨來源的實作匯出入口。
 
 Browser 登入前復原最多三次嘗試，只包住頁面與驗證碼準備；OCR、送出登入與資料查詢留在來源 adapter，政策細節見 `docs/004-connector-development.md`。
 
 ### `shared/`
 
-前端、Worker 與 connector 共用的穩定契約及純邏輯，包括：
+前端與 Worker 共用的穩定契約及純邏輯，包括：
 
-- 金融資料型別。
 - `ConnectorId` 與支援清單。
 - API success/error contract。
+- API 錯誤代碼：同步錯誤 `SyncErrorCode` 與其他 `GeneralApiErrorCode`，合併為 `ApiErrorCode`。
 - 銀行與信用卡帳單 API response contract。
+- 設定頁的排程、連接器設定狀態與分類規則 API response contract，以及排程間隔、分類規則欄位與比對方式的允許值。
 - 活動配對、去重、排序與資料組裝。
 
 不得將 Hono `Context`、D1 row 或 Puppeteer object 放入共用契約。
 
-`index.ts` 只提供匯出；金融正規化資料、API 型別與 connector catalog 分別維護於 `financial-types.ts`、`api-types.ts`／`bank-api.ts` 與 `connector-catalog.ts`。銀行 route 以 `satisfies` 在 JSON 回傳處檢查共用 response 契約；此契約描述現有 JSON 的 nullable 欄位與帳單數值 flag，與 connector 的正規化資料及 repository row 各自獨立。
+只有前端與 Worker 都使用的內容才放進 `shared/`；只被 Worker 使用的型別（例如 connector 正規化資料）留在 `apps/worker`。
+
+`index.ts` 是唯一匯出入口，前後端一律從 `@taiwan-fin-hub/shared` 引用，不直接引用內部檔案，因此 `shared/` 內部可自由調整檔案位置。HTTP 契約放在 `api/`，依 API resource 分檔，與前端 `data/` 的分組對應；活動純邏輯放在 `activity/`；connector catalog 與匯率幣別規則留在根層。銀行、排程、連接器設定、分類與發票配對 route 以 `satisfies` 在 JSON 回傳處檢查共用 response 契約；此契約描述現有 JSON 的 nullable 欄位與帳單數值 flag，與 connector 的正規化資料及 repository row 各自獨立。
+
+允許值以 `as const` 陣列放在 `shared/`（例如 `SYNC_INTERVAL_MINUTES`、`CLASSIFICATION_RULE_OPERATORS`），Worker 以這些陣列建立 Zod 驗證，前端以同一陣列產生選項；Zod schema 本身留在 Worker。資料庫以一般文字或數字保存的欄位（如分類規則的 `field`／`operator`、排程的 `intervalMinutes`），response 契約維持 `string`／`number`，不宣稱比資料庫更嚴格的型別。
 
 ### `apps/worker/src/db/`
 
@@ -446,6 +464,8 @@ API error 統一為：
 
 Service 應使用明確的 error class 表示，route 再映射成固定 HTTP status 與 error code。
 
+所有錯誤代碼集中宣告於 `shared/api/errors.ts`。`jsonError`、`validationHook` 只接受 `ApiErrorCode`；`classifySyncError`、`SyncFailureInput` 與手動同步 run 的結案只接受 `SyncErrorCode`，讀出 sync job 與 run 的 errorCode 時也標為同一型別。新增或改名代碼須先修改共用型別，前端依代碼接續流程的比對會在型別檢查時一併驗證。
+
 ### 未預期錯誤
 
 未被 route 處理的錯誤交由全域 `api.onError`：
@@ -482,6 +502,20 @@ X-Next-Cursor: <opaque-cursor>
 
 只有 `X-Has-More` 為 `true` 時，才需要回傳 `X-Next-Cursor`。
 
+## 讀取 API 效能
+
+線上讀取耗時主要來自 D1 往返與冷啟動，個別查詢的執行時間通常只有數毫秒。
+因此優先減少每頁請求數與循序 D1 往返，再處理查詢本身。
+`wrangler.toml` 已開啟 `observability.traces`，可在 Workers trace 檢視 D1 與對外 fetch 的耗時。
+
+- 只需帳戶與餘額的頁面使用 `GET /api/bank/accounts`，不載入交易、轉帳配對與分類。
+- 資料來源卡片的設定狀態沿用 `/api/sync-jobs` 的 `configured`；開啟連接器詳情時才讀取 `/api/connectors/:connectorId/settings`。
+- `GET /api/activity/invoice-mappings` 接受與其他區間 API 相同的 `from`／`to` 月份。發票與交易必須同一個台北日才能連結，因此頁面只讀取區間內發票的決定；未帶區間時回傳全部。
+- 銀行交易分類時，分類規則與第一輪查詢並行，當頁交易的分類覆寫與轉帳候選並行；只有頁面外的轉帳候選需要再查一次覆寫。
+- 各 connector／asset type 的最新持倉統一使用 `db/investment-positions.ts`，以一次 GROUP BY 取得最新日期，不逐列執行 MAX 子查詢。
+- Cloudflare Access 公鑰只在 isolate 記憶體快取；Access 後方的 Worker 無法使用 Cache API。同一 isolate 的並行請求共用同一次下載與匯入後的金鑰。
+- 以日期 expression 篩選區間時，需同時保留可走索引的原始欄位範圍條件，並以 EXPLAIN QUERY PLAN 確認。
+
 ## Connector 同步架構
 
 共用同步管理位於 `features/sync`，各來源實作位於 Worker 根層的 `sources`：
@@ -496,7 +530,9 @@ apps/worker/src/sources/
 ```text
 sync/
 ├── route.ts                   # 手動同步與 challenge API
+├── error-response.ts          # 同步錯誤轉 API 錯誤代碼
 ├── manual-sync.ts             # 手動同步的鎖、結果狀態與報告修復
+├── manual-run-repository.ts   # 背景手動同步 run 狀態轉換
 ├── registry.ts                # 來源 dispatch 與 scope 驗證
 ├── types.ts
 ├── config.ts
@@ -571,8 +607,10 @@ sources/
 
 | 檔案                                             | 責任                                                                                                                                       |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `route.ts`                                       | 手動同步 API、request validation 與 connector-specific 錯誤 mapping。                                                                      |
-| `manual-sync.ts`                                 | 一般銀行手動同步的 lock、狀態更新與已結案排程報告修復協調。                                                                                |
+| `route.ts`                                       | 手動同步 API 與 request validation；同步錯誤回應交由 `error-response.ts`。                                                                 |
+| `error-response.ts`                              | 將 connector-specific 錯誤分類為 HTTP status、錯誤代碼、脫敏訊息與 `Retry-After`；HTTP 回應與背景 run 結果共用同一份分類。                 |
+| `manual-sync.ts`                                 | 一般銀行手動同步的 lock、狀態更新與已結案排程報告修復協調；也負責背景手動同步的排入與 Queue 執行。                                         |
+| `manual-run-repository.ts`                       | `manual_sync_runs` 的建立／取得 active run 與條件式狀態轉換；轉為 running 前必須持有 canonical connector lock。                            |
 | `registry.ts`                                    | 從共用 catalog 驗證 scope，dispatch 單次同步與 challenge handler；電子發票與集保的 `run` 明確拒絕單次同步，入口必須使用各自的 Queue 流程。 |
 | `types.ts`                                       | 同步 scope、scope 常數與 outcome 型別。                                                                                                    |
 | `config.ts`、`connector-state.ts`                | 取得設定、加密敏感欄位，區分公開偏好、敏感 session 與安全 cursor。                                                                         |
@@ -585,6 +623,14 @@ sources/
 | `transaction-merge.ts`、`card-reconciliation.ts` | 共用舊交易合併與單卡摘要帳戶修復；保留使用者偏好、分類與發票關聯。                                                                         |
 
 Worker 的 `sources/<connectorId>/sync.ts` 負責設定解密、connector 呼叫與同步資料寫入；單次銀行流程也處理互動式 challenge，override 型別與來源 colocate。`ctbc/authorizations.ts` 管信用卡授權合併，`hncb/repository.ts` 管華南舊交易／帳戶修復，`nextbank/deposits.ts` 與 `obank/time-deposits.ts` 管存款生命週期。共用同步管理留在 `features/sync`，來源之間共用的外部取資料工具留在 `sources` 根目錄。
+
+中信的固定裝置識別、銀行發出的裝置 seed 與短期兩階段登入暫存只保存於加密設定。
+`ctbc/sync.ts` 以設定版本 CAS 在初始化前保存裝置 ID、首次握手後登入前保存 seed；
+後續同步在握手前還原同一 seed。手動 App 核准／Email OTP 接回同一工作階段；排程遇到驗證只保存狀態
+並標記 `needs_user_action`，不輪詢或主動寄送 OTP。完成登入清除暫存，查帳後登出。
+保存行銀裝置識別與 seed 不等同設備綁定或網銀信任瀏覽器登記，App 核准僅接續當次登入。
+promotion 的設定版本 guard 與金融資料、授權合併、cursor 在同一 D1 batch；
+登入期間設定變更時整組回滾。公開 API 只顯示驗證狀態、方式與期限，協定及驗收限制見連接器文件。
 
 玉山、台新、永豐、中信、第一銀行、華南與兆豐提供來源的卡片識別後，使用共用 `card-authorization-matching.ts`：同帳戶、同卡、台灣時區同消費日、同幣別同額同方向的群組，依授權時刻與 `sourceId`、明細的 `sourceId` 順序逐一分配，每筆明細只配一次，不比店名。兩側筆數不等時只配可對應的筆數，其餘持續顯示；既有配對與被占用的目標不重新分配。核心可先執行來源提供的雙向唯一可靠識別比對；雙方授權碼明確不同時，禁止金額 fallback。永豐精確配對後仍以來源策略處理外幣／調整金額。
 
@@ -646,7 +692,7 @@ Cron、Queue 與預設批次的執行方式維持既有流程。
 - 一般同步工作完成或失敗後必須在 `finally` 釋放。durable run 的 connector lock 跨 invocation 維持，由成功寫入或失敗結案流程釋放；每段另有 owner-scoped run lease。
 - Lock acquisition 失敗時回傳或記錄「已有同步執行中」，不得平行執行同一 connector。
 
-每次 10 分鐘 Cron kick 先恢復停滯的電子發票／集保 run：沒有有效 chunk lease 且 3 分鐘未更新者補送 continuation，超過整體期限者先以 owner guard 結案。有效 chunk lease 不會被 Cron 中止；該 invocation 自行受執行期限限制。一般同步的過期殘留鎖會標記失敗並清除，保留最後成功時間。單一 run 的恢復失敗只記錄 log，不阻擋其他 run 與 scheduler kick；20 秒的 scheduler 串接不重複執行恢復。
+每次 10 分鐘 Cron kick 先恢復停滯的電子發票／集保 run：沒有有效 chunk lease 且 3 分鐘未更新者補送 continuation，超過整體期限者先以 owner guard 結案。有效 chunk lease 不會被 Cron 中止；該 invocation 自行受執行期限限制。背景手動同步排隊超過 30 分鐘者以 `SYNC_QUEUE_TIMEOUT` 結案，running 但已沒有有效 connector lock 者以 `SYNC_INTERRUPTED` 結案。一般同步的過期殘留鎖會標記失敗並清除，保留最後成功時間。單一 run 的恢復失敗只記錄 log，不阻擋其他 run 與 scheduler kick；20 秒的 scheduler 串接不重複執行恢復。
 
 Cron trigger 向 `SYNC_QUEUE` 送出 scheduler 啟動訊息。Queue consumer
 每次 invocation 最多處理一個 connector，完成後若確實處理了工作便以 20 秒延遲送出下一個訊息，
@@ -665,7 +711,7 @@ Browser session 取得與登入頁復原重開，皆由共用 browser adapter �
 
 Demo 模式（`DEMO_MODE`）不執行背景同步：Cron 不送出 scheduler 啟動訊息，Queue consumer
 不處理任何訊息，避免啟用 Demo 前殘留的訊息繼續以已儲存的憑證登入外部服務。scheduler 啟動訊息
-直接 ack；電子發票與集保分段訊息則以 1 小時延遲重新送出以保留 continuation，關閉 Demo 後會
+直接 ack；電子發票與集保分段訊息及背景手動同步訊息則以 1 小時延遲重新送出以保留 continuation，關閉 Demo 後會
 重新檢查進行中的 durable run；已超過整體期限者結案，需要重新啟動同步。若期間 session 過期或設定變更，仍可能需要重新驗證。
 
 電子發票不在單一 connector invocation 內擷取所有品項明細。它使用
@@ -684,6 +730,39 @@ promotion 前後的重送皆可冪等。
 耗盡才將 run 結案為 `needs_user_action` 或 `failed`，不寫入部分完成的明細。
 建立 run 後的初始狀態寫入或首次 Queue enqueue 失敗會補償結案並清鎖；重試既有 run 會重新 enqueue，不會只回傳 202 而沒有 continuation。手動重試可補送既有排程 run，保留原 trigger 與批次。逾時且無有效 chunk lease 的舊 run 先結案，再建立新 run。成功／失敗 finalize 同時核對 canonical owner 與 chunk owner／無有效 chunk lease，並在同一 batch 更新結果與釋放鎖。
 
+### 背景手動同步
+
+一般銀行的背景手動同步以 `manual_sync_runs` 保存狀態，讓同步不依附發起的 HTTP request。
+不帶使用者輸入的 `POST /api/connectors/<id>/sync` 由 `startQueuedManualSync` 建立或取得該來源
+唯一的 queued／running run，再 enqueue `run-manual-sync`，回傳 202 與 run ID；訊息只帶 run ID，
+不含憑證、OTP、驗證碼或 session。enqueue 失敗時以 `cancelQueuedManualSync` 結案並回報錯誤，
+不留下沒有 Queue 訊息的 run。電子發票與集保沿用各自的分段流程，不建立此 run。
+
+帶驗證碼、OTP、中信驗證動作或國泰 `otpChannel` 的接續同步仍在 request 內以
+`withManualSyncLock` 執行：這些輸入必須接回同一次登入工作階段，且不得放入 Queue 訊息。
+
+手動同步不排在同一來源的其他同步之後：該來源的 connector lock 有效時（排程、CAPTCHA
+preparation 或其他手動同步），建立 run 的條件式 INSERT 不寫入並回報 `SYNC_ALREADY_RUNNING`；
+已有背景手動 run 時回傳該 run。其他來源的排程不阻擋手動同步；Queue 不保證 FIFO，
+手動訊息通常會在排程串接的 20 秒間隔中被處理。
+
+Queue consumer 以 run ID 作為 owner 取得 canonical connector lock，取得鎖後才把 queued run
+轉為 running；排入後才被其他同步搶先取得鎖時，run 以 `cancelled`／`SYNC_ALREADY_RUNNING`
+結案，不再等待，也不釋放對方的鎖。重送的訊息遇到非 queued run 直接 ack，不會再次登入銀行。10 分鐘執行期限從取得鎖開始計算，
+不含排隊時間；仍以 `trigger = manual` 執行，需要驗證碼或 OTP 的來源可主動發送，
+結案為 `needs_user_action` 時保存錯誤代碼供使用者回來處理。
+
+只有 Browser Run 容量不足（登入前），且等待時間仍在 30 分鐘排隊上限內，才會放回 queue，最多三次，且不記錄為 sync job 失敗；每日額度這類更長的等待直接以容量錯誤結案。
+放回 queued 到釋放自己 lock 之間，重送訊息與排隊逾時清理都不會結案此 run，交由替代訊息接續。
+其他錯誤一律結案，不自動重試銀行登入。結果與 sync job 狀態、報告修復沿用一般手動同步；
+釋放 connector lock 後依推播偏好送出結果通知（`trigger = manual`）。
+
+所有同步失敗寫入 `sync_jobs.last_error` 時一併寫入 `last_error_code`（`classifySyncError` 的代碼，
+成功時清空），run 也保存相同代碼。前端回到頁面後依代碼接續驗證碼、OTP 等原本由同步請求錯誤
+觸發的流程。所有來源（含電子發票與集保）首次同步成功時，若排程仍關閉便在同一筆成功更新中開啟；
+以更新前的 `last_success_at IS NULL` 判斷首次成功，不變更既有排程模式或時間。
+曾成功過的來源保留使用者的開關設定，失敗或等待驗證不會自動啟用。已結案超過 7 天的 run 由 Cron 恢復流程清除。
+
 ### 集保分段同步
 
 集保的手動 API 與排程由 `startTdccSyncRun` 建立／取得 active run，再 enqueue
@@ -691,9 +770,11 @@ promotion 前後的重送皆可冪等。
 `tdcc_sync_run_items` 保存銀行與投資交易的分頁工作及結果。同一 connector 的
 `all`、`investments`、`bank`、`trades` 共用 active run 限制與 canonical lock。
 
-手動啟動會先初始化登入以回報 OTP 等互動需求；排程由 Queue 初始化且不主動寄送
-OTP。API 的排入同步回應不代表全部資料已完成，前端須追蹤 sync job lifecycle。
-手動初始化也取得獨立 run lease，避免同一 run 的 Queue delivery 同時登入。
+一般手動啟動與排程都由 Queue 初始化；手動 run 在 Queue 中可主動寄送 OTP，需要互動時以
+`needs_user_action` 與 `last_error_code` 結案，排程則不主動寄送。帶 OTP 的手動請求仍在 request
+內初始化，讓驗證碼錯誤立即回報。API 的排入同步回應不代表全部資料已完成，前端須追蹤 sync job
+lifecycle。request 內初始化也取得獨立 run lease，避免同一 run 的 Queue delivery 同時登入。
+非預設批次的電子發票與集保 run（手動或自訂排程）結案時依推播偏好送出通知。
 每個 chunk 取得 owner-scoped run lease、更新 connector lock，最多 claim 一個
 分頁 item；仍有 pending 或 processing work 時 enqueue 下一段。item 更新使用
 claim token，chunk 的 `finally` 只釋放該 owner 的 run lease。
@@ -705,18 +786,12 @@ claim token，chunk 的 `finally` 只釋放該 owner 的 run lease。
 promotion 與 finalize 的進度。暫時錯誤使用 Queue retry，需要互動或重試耗盡時結案。
 connector lock 保留到報告結果寫入及 run 成功結案；失敗的 run transition、sync job、排程結果、staging 清理與清鎖使用同一個 owner／idle lease guard batch。
 
-`GET /api/sync-jobs` 統一以有效 connector lock 或電子發票／集保 active run 判斷 `running`，並提供 `runId`、`phase`、`lastProgressAt`、`retryAfterSeconds`。durable run 的 `phase = stalled` 表示可補送；有效 chunk lease 的剩餘時間是最短重試等待，不是預估完成時間。一般同步的 `lastProgressAt` 沿用 job 狀態更新時間，可能來自 heartbeat；durable run 則不將 lease renewal 當成進度。
+一般同步的進度由 `createSyncExecution` 以 `AsyncLocalStorage` 提供 `reportSyncProgress`（`sources/sync-progress.ts`）：
+執行開始為 `login`，各 connector 在登入成功、開始取得資料時回報 `fetching`，`persistStagedSyncWrite` 開始寫入時回報 `saving`。
+階段以 owner 條件更新寫入 `sync_jobs.lock_phase`，取得與釋放鎖時清空；寫入失敗只記錄 log，不影響同步。
+新增 connector 時須在登入成功後呼叫 `reportSyncProgress("fetching")`，否則取得資料期間會停在「正在登入」。
 
-### 背景手動同步
-
-國泰世華一般手動同步需時一分多鐘。若在 HTTP request 內執行，瀏覽器重新整理、切換 App 或網路中斷會讓 Worker 在請求結束約 30 秒後被取消，連 `finally` 都不執行：資料未寫入、結果未記錄，鎖要等過期後由 Cron 清除。因此未附 OTP 的國泰同步改由 Queue 執行：
-
-- API 以 `enqueueManualSync` 取得 canonical lock 後送出 `run-manual-sync`，回傳 202 與 `runId`；已有同步執行中時回傳 409。Queue message 只包含 `connectorId` 與 `runId`，不得攜帶 OTP 或任何憑證。
-- 排入時的租約為 20 分鐘（`QUEUED_MANUAL_SYNC_LEASE_MS`），涵蓋等待前一個 Queue 工作（concurrency 1，最多 10 分鐘）與本次執行；consumer 開始時以同一 `runId` 續租為一般 10 分鐘租約，執行期限自 consumer 開始計算。
-- consumer 與 HTTP 手動同步共用 `runWithManualSyncLock`，記錄成功、失敗或 `needs_user_action`、修復排程報告並釋放鎖。鎖已不屬於此 `runId`（已過期被清除或重複遞送）時不執行。
-- message 一律 ack、不 retry：重送會再次登入銀行，可能重寄 OTP 或觸發銀行的安全機制。結果只看 sync job。唯一例外是國泰 OTP 工作階段已過期：此錯誤在登入銀行前發生，且同步已清除該工作階段，consumer 以全新登入在同一次 invocation 內重試一次，比照原本前端的處理。
-- 送出 message 失敗時記錄失敗並釋放鎖。Demo 模式不執行已排入的手動同步，記錄失敗後釋放鎖並 ack。
-- OTP 寄送與驗證（request body 帶 `otpChannel` 或 `otp`）仍在 request 內執行，以便直接回報驗證結果。
+`GET /api/sync-jobs` 統一以有效 connector lock、電子發票／集保 active run 或 queued 背景手動 run 判斷 `running`，並提供 `runId`、`phase`（排隊中的背景手動 run 為 `queued`，一般同步為 `lock_phase`，舊鎖沒有階段時為 `processing`）、`lastProgressAt`、`retryAfterSeconds`、`lastErrorCode`，以及各來源最近一筆背景手動 run（`manualRun`）。durable run 的 `phase = stalled` 表示可補送；有效 chunk lease 的剩餘時間是最短重試等待，不是預估完成時間。一般同步的 `lastProgressAt` 沿用 job 狀態更新時間，可能來自 heartbeat；durable run 則不將 lease renewal 當成進度。
 
 ## 同步結果通知
 
@@ -727,7 +802,7 @@ connector lock 保留到報告結果寫入及 run 成功結案；失敗的 run t
 - `repository.ts`：`push_subscriptions` 與 `notification_preferences` 的 D1 存取。
 - `payload.ts`：將 sync status 轉成不含金融明細的安全通知內容。
 
-排程同步更新 `sync_jobs` 後才呼叫通知 service。通知是 best-effort；發送失敗只記錄 log，不得將成功同步改成失敗。瀏覽器 subscription payload 使用既有設定加密金鑰保存。
+排程同步與背景手動同步更新 `sync_jobs` 後才呼叫通知 service；request 內的接續同步由畫面直接顯示結果，不另行推播。通知是 best-effort；發送失敗只記錄 log，不得將成功同步改成失敗。瀏覽器 subscription payload 使用既有設定加密金鑰保存。
 
 使用預設排程（`schedule_mode = inherit`）的工作採「一輪一批次」。沒有進行中的批次且至少一個繼承工作到期時，scheduler 會以單一 D1 batch transaction 建立 header，並固定快照當下所有啟用且不需使用者處理的繼承工作。批次進行期間，每次 Queue consumer invocation 只從尚未完成的固定成員中挑選一個目前未鎖定且不需使用者處理的工作；已完成的成員不會在同一輪再次執行，新啟用的工作則等下一輪。排程結果會在釋放 connector lock 前直接寫入成員，避免重複 Queue 訊息遺漏結果；停用、改為自訂排程或進入 `needs_user_action` 的非執行中成員會被略過。只有所有固定成員都有結果或被略過時，scheduler 才以條件式更新取得一次推播發送權並關閉批次，下一輪才能建立。建立新輪次時會清理超過 30 天的已結案批次。手動同步不完成或改寫進行中的批次成員；自訂排程維持逐工作推播。
 
@@ -850,7 +925,7 @@ Connector 不得直接寫入金融資料表。
 3. 需要 Worker binding 時，在同一來源目錄建立 `connector.ts` adapter。
 4. 在同一來源目錄的 `sync.ts` 組合共用 record mapping 與 staged persistence 寫入；來源專用的配對與修復放在相鄰檔案。
 5. 在 `connectorRuntimeRegistry` 註冊手動／排程同步與 challenge handler。
-6. 前端使用受 `ConnectorFormFieldKey` 約束的欄位，不得重複維護 connector 顯示 metadata。
+6. 前端直接使用 catalog 的 `connectorList` 與 `credentialFields` 顯示資料來源與設定表單，不得重複維護 connector 顯示 metadata 或欄位標籤。
 7. 透過 migration 建立預設停用的 `all` sync job。
 8. 依四類核心風險完成必要驗證，不逐層建立相同行為的模擬測試。
 

@@ -583,7 +583,7 @@ describe("台新必要金融查詢", () => {
     }
   });
 
-  it("使用完整即時消費端點，無卡回應只略過信用卡並保留存款", async () => {
+  it("使用完整即時消費端點，無卡只略過信用卡，無查詢權限的存款帳戶改用總覽餘額", async () => {
     const successful = responsePage(() => undefined);
     const data = await fetchTaishinBankData(successful.page, () => {}, bankNow);
     expect(data.bankTransactions).toHaveLength(6);
@@ -607,6 +607,42 @@ describe("台新必要金融查詢", () => {
       "JPY",
     ]);
     expect(deposits.bankTransactions).toHaveLength(5);
+    // 實際證券交割戶查餘額的完整回應（只有 RESULT 與 ERRORMSG）。
+    const noPermission = responsePage((input) =>
+      input.path.endsWith("/web1/rb0101/query")
+        ? { RESULT: "ERROR", ERRORMSG: "(EBF0015)無交易權限" }
+        : undefined,
+    );
+    const overviewOnly = await fetchTaishinBankData(
+      noPermission.page,
+      () => {},
+      bankNow,
+    );
+    expect(
+      overviewOnly.bankAccounts.map((row) => [row.accountType, row.currency]),
+    ).toEqual([
+      ["savings", "TWD"],
+      ["savings", "USD"],
+      ["savings", "JPY"],
+      ["credit", "TWD"],
+    ]);
+    const twdAccountId = overviewOnly.bankAccounts[0]!.sourceId;
+    // 總覽只有帳戶餘額，可用餘額保持未知。
+    expect(
+      overviewOnly.bankBalanceSnapshots.find(
+        (row) => row.accountId === twdAccountId,
+      ),
+    ).toMatchObject({ balance: 2000, availableBalance: undefined });
+    expect(
+      overviewOnly.bankTransactions.some(
+        (row) => row.accountId === twdAccountId,
+      ),
+    ).toBe(false);
+    expect(
+      noPermission.evaluate.mock.calls.some(([, input]) =>
+        input.path.endsWith("/web1/rb0102/query"),
+      ),
+    ).toBe(false);
   });
 
   it("即時消費忙碌重試耗盡時整次失敗，不能以空清單成功", async () => {

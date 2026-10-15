@@ -3,12 +3,8 @@
   import type { ApiClient } from "@/shared/api/client";
   import type { MobileSettingsView, View } from "@/app/types";
   import { exchangeRatesQuery } from "@/data/assets/queries";
-  import { bankQuery } from "@/data/bank/queries";
   import { classificationRulesQuery } from "@/data/classification/queries";
-  import {
-    connectorDefinitions,
-    connectorFields,
-  } from "@/data/connectors/definitions";
+  import { connectorList } from "@taiwan-fin-hub/shared";
   import { syncJobsQuery } from "@/data/connectors/queries";
   import {
     getActionableSyncJobs,
@@ -28,7 +24,7 @@
   import NotificationPanel from "./components/NotificationPanel.svelte";
   import SourceCard from "./components/SourceCard.svelte";
   import ConnectorPanel from "./connectors/ConnectorPanel.svelte";
-  import { formatScheduleWeekdays } from "./model/schedule";
+  import { formatSyncSchedule } from "./model/schedule";
   let {
     api,
     demoMode,
@@ -42,7 +38,7 @@
     mobileView?: MobileSettingsView | "more";
     navigate: (view: View) => void;
   } = $props();
-  const sources = connectorDefinitions;
+  const sources = connectorList;
   const settingTabs = [
     { view: "settings" as const, label: "總覽" },
     { view: "data-sources" as const, label: "資料來源" },
@@ -53,7 +49,6 @@
   ];
   const jobs = createQuery(syncJobsQuery(() => api));
   const rules = createQuery(classificationRulesQuery(() => api));
-  const bank = createQuery(bankQuery(() => api));
   const rates = createQuery(exchangeRatesQuery(() => api));
   const notifications = createQuery(notificationConfigQuery(() => api));
   let selectedConnector = $state<ConnectorId | null | undefined>(undefined);
@@ -96,13 +91,7 @@
     ).length,
   );
   const scheduleSummary = $derived(
-    !inheritedJob
-      ? "尚未設定"
-      : inheritedJob.intervalMinutes === 1440
-        ? `每天 ${inheritedJob.preferredTime}`
-        : inheritedJob.intervalMinutes === 10080
-          ? `${formatScheduleWeekdays(inheritedJob.preferredWeekdays)} ${inheritedJob.preferredTime}`
-          : `每 ${inheritedJob.intervalMinutes / 60} 小時`,
+    !inheritedJob ? "尚未設定" : formatSyncSchedule(inheritedJob),
   );
   const ratesSummary = $derived(
     ($rates.data ?? [])
@@ -207,7 +196,6 @@
       jobsLoading={$jobs.isPending}
       jobsError={$jobs.isError}
       rules={$rules.data ?? []}
-      bank={$bank.data ?? { accounts: [], transactions: [] }}
       {navigate}
       {api}
       {openConnector}
@@ -238,8 +226,9 @@
           {#each orderedSources as source (source.id)}
             <SourceCard
               {api}
-              {...source}
               id={source.id}
+              title={source.title}
+              description={source.description}
               jobs={$jobs.data ?? []}
               compact
               compactCard
@@ -274,7 +263,6 @@
                 connectorId={activeConnector}
                 {demoMode}
                 title={selectedSource?.title ?? "連接器"}
-                fields={connectorFields[activeConnector]}
                 embedded
               />{/key}
           {:else}
@@ -302,8 +290,9 @@
           >
             <SourceCard
               {api}
-              {...source}
               id={source.id}
+              title={source.title}
+              description={source.description}
               jobs={$jobs.data ?? []}
               selected={activeConnector === source.id}
               onConfigure={() => selectConnector(source.id)}
@@ -314,7 +303,6 @@
                     connectorId={source.id}
                     {demoMode}
                     title={source.title}
-                    fields={connectorFields[source.id]}
                     embedded
                   />{/key}
               {/if}
@@ -570,7 +558,10 @@
           {#if syncJobsState === "ready"}
             <button
               class="mt-4 rounded-lg bg-steel px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-steel/90"
-              onclick={() => navigate("data-sources")}
+              onclick={() =>
+                actionSource
+                  ? openConnector(actionSource.id)
+                  : navigate("data-sources")}
               >{needsAction ? "查看連接器" : "管理資料來源"}</button
             >
           {/if}
@@ -630,8 +621,9 @@
             {#each orderedSources as source (source.id)}
               <SourceCard
                 {api}
-                {...source}
                 id={source.id}
+                title={source.title}
+                description={source.description}
                 jobs={$jobs.data ?? []}
                 compact
                 selected={false}

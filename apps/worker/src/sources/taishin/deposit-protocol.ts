@@ -4,7 +4,7 @@ import type {
   BankAccount,
   BankBalanceSnapshot,
   BankTransaction,
-} from "@taiwan-fin-hub/shared";
+} from "../financial-types";
 import { BANK_SYNC_MONTHS } from "../sync-window";
 
 // Field meanings follow the official RWD RB0100/0101/0102 and RB0800/0802 pages.
@@ -192,6 +192,14 @@ export class TaishinDepositProtocolError extends Error {
   ) {
     super(message);
     this.name = "TaishinDepositProtocolError";
+  }
+}
+
+/** The bank answers EBF0015 for a listed account online banking cannot query. */
+export class TaishinDepositNoPermissionError extends Error {
+  constructor() {
+    super("台新存款帳戶沒有網銀查詢權限。");
+    this.name = "TaishinDepositNoPermissionError";
   }
 }
 
@@ -656,13 +664,30 @@ export async function fetchTaishinDeposits(
         throw new TaishinDepositProtocolError(
           "台新存款帳戶未出現在交易查詢清單。",
         );
+      const balancePayload = await request(`${root}/web1/rb0101/query`, {
+        account: account.accountNo,
+      }).catch((error: unknown) => {
+        if (error instanceof TaishinDepositNoPermissionError) return undefined;
+        throw error;
+      });
+      // Query-only members and securities settlement accounts are listed by
+      // RB0100 with a balance, but RB0101 answers EBF0015. Keep the account
+      // with the RB0100 balance and skip only its transaction details.
+      if (balancePayload === undefined) {
+        addAccount(
+          account.accountNo,
+          "TWD",
+          account.accountTypeName,
+          amount(account.balance),
+        );
+        console.log(
+          JSON.stringify({ event: "taishin_deposit_overview_balance_used" }),
+        );
+        continue;
+      }
       const balance = checked(
         z.object({ balance: moneySchema, availbalance: moneySchema.nullish() }),
-        twdData(
-          await request(`${root}/web1/rb0101/query`, {
-            account: account.accountNo,
-          }),
-        ),
+        twdData(balancePayload),
         "臺幣即時餘額",
       );
       addAccount(

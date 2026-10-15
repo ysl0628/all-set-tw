@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Env, ScheduledSyncQueueMessage } from "../../../src/platform/env";
+import type { Env, SyncQueueMessage } from "../../../src/platform/env";
 
 const mocks = vi.hoisted(() => ({
   failEinvoiceSyncRun: vi.fn(),
@@ -9,17 +9,6 @@ const mocks = vi.hoisted(() => ({
   processTdccSyncChunk: vi.fn(),
   runSchedulerTick: vi.fn(),
   recoverStalledSyncRuns: vi.fn(),
-  runQueuedManualSync: vi.fn(),
-  abandonQueuedManualSync: vi.fn(),
-  runConnectorSync: vi.fn(),
-}));
-
-vi.mock("../../../src/features/sync/manual-sync", () => ({
-  runQueuedManualSync: mocks.runQueuedManualSync,
-  abandonQueuedManualSync: mocks.abandonQueuedManualSync,
-}));
-vi.mock("../../../src/features/sync/registry", () => ({
-  runConnectorSync: mocks.runConnectorSync,
 }));
 
 vi.mock("../../../src/features/sync/scheduling/scheduler", () => ({
@@ -44,9 +33,8 @@ import {
   DEMO_MODE_PARKED_CHUNK_DELAY_SECONDS,
   enqueueScheduledSync,
 } from "../../../src/features/sync/scheduling/queue";
-import { CathayOtpSessionExpiredError } from "../../../src/sources/cathaybk/connector";
 
-function queueMessage(body: ScheduledSyncQueueMessage) {
+function queueMessage(body: SyncQueueMessage) {
   return {
     id: "message-1",
     timestamp: new Date(),
@@ -54,22 +42,22 @@ function queueMessage(body: ScheduledSyncQueueMessage) {
     attempts: 1,
     ack: vi.fn(),
     retry: vi.fn(),
-  } as unknown as Message<ScheduledSyncQueueMessage>;
+  } as unknown as Message<SyncQueueMessage>;
 }
 
-function queueBatch(message: Message<ScheduledSyncQueueMessage>) {
+function queueBatch(message: Message<SyncQueueMessage>) {
   return {
     queue: "taiwan-fin-hub-sync",
     messages: [message],
     ackAll: vi.fn(),
     retryAll: vi.fn(),
-  } as unknown as MessageBatch<ScheduledSyncQueueMessage>;
+  } as unknown as MessageBatch<SyncQueueMessage>;
 }
 
 function env(send = vi.fn().mockResolvedValue(undefined)) {
   return {
     DB: {} as D1Database,
-    SYNC_QUEUE: { send } as unknown as Queue<ScheduledSyncQueueMessage>,
+    SYNC_QUEUE: { send } as unknown as Queue<SyncQueueMessage>,
   } as Env;
 }
 
@@ -77,7 +65,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.isEinvoiceUserActionError.mockReturnValue(false);
   mocks.recoverStalledSyncRuns.mockResolvedValue(undefined);
-  mocks.abandonQueuedManualSync.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -112,10 +99,14 @@ describe("scheduled sync queue", () => {
       type: "run-einvoice-chunk",
       runId: "einvoice-run-1",
     });
+    const manual = queueMessage({
+      type: "run-manual-sync",
+      runId: "manual-run-1",
+    });
     const batch = {
       ...queueBatch(kick),
-      messages: [kick, tdcc, einvoice],
-    } as unknown as MessageBatch<ScheduledSyncQueueMessage>;
+      messages: [kick, tdcc, einvoice, manual],
+    } as unknown as MessageBatch<SyncQueueMessage>;
     vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     await consumeScheduledSyncQueue(batch, {
@@ -123,11 +114,15 @@ describe("scheduled sync queue", () => {
       DEMO_MODE: "true",
     } as Env);
 
-    for (const message of [kick, tdcc, einvoice]) {
+    for (const message of [kick, tdcc, einvoice, manual]) {
       expect(message.ack).toHaveBeenCalledOnce();
       expect(message.retry).not.toHaveBeenCalled();
     }
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenCalledWith(
+      { type: "run-manual-sync", runId: "manual-run-1" },
+      { delaySeconds: DEMO_MODE_PARKED_CHUNK_DELAY_SECONDS },
+    );
     expect(send).toHaveBeenCalledWith(
       { type: "run-tdcc-chunk", runId: "tdcc-run-1" },
       { delaySeconds: DEMO_MODE_PARKED_CHUNK_DELAY_SECONDS },
@@ -139,112 +134,5 @@ describe("scheduled sync queue", () => {
     expect(mocks.runSchedulerTick).not.toHaveBeenCalled();
     expect(mocks.processTdccSyncChunk).not.toHaveBeenCalled();
     expect(mocks.processEinvoiceSyncChunk).not.toHaveBeenCalled();
-  });
-
-  it("背景手動同步以 runId 執行並 ack", async () => {
-    mocks.runQueuedManualSync.mockImplementation(
-      async (_env, _connectorId, _runId, task) => {
-        await task({} as Env);
-        return true;
-      },
-    );
-    const message = queueMessage({
-      type: "run-manual-sync",
-      connectorId: "cathaybk",
-      runId: "manual-run-1",
-    });
-
-    await consumeScheduledSyncQueue(queueBatch(message), env());
-
-    expect(mocks.runQueuedManualSync).toHaveBeenCalledWith(
-      expect.anything(),
-      "cathaybk",
-      "manual-run-1",
-      expect.any(Function),
-    );
-    expect(mocks.runConnectorSync).toHaveBeenCalledWith(
-      expect.anything(),
-      "cathaybk",
-      "manual",
-      "all",
-      {},
-    );
-    expect(message.ack).toHaveBeenCalledOnce();
-    expect(message.retry).not.toHaveBeenCalled();
-  });
-
-  it("國泰 OTP 工作階段過期時只以全新登入重試一次", async () => {
-    mocks.runQueuedManualSync.mockImplementation(
-      async (_env, _connectorId, _runId, task) => {
-        await task({} as Env);
-        return true;
-      },
-    );
-    mocks.runConnectorSync
-      .mockRejectedValueOnce(new CathayOtpSessionExpiredError())
-      .mockResolvedValueOnce({ newRecords: 0 });
-    const message = queueMessage({
-      type: "run-manual-sync",
-      connectorId: "cathaybk",
-      runId: "manual-run-1",
-    });
-
-    await consumeScheduledSyncQueue(queueBatch(message), env());
-
-    expect(mocks.runConnectorSync).toHaveBeenCalledTimes(2);
-    expect(message.ack).toHaveBeenCalledOnce();
-    expect(message.retry).not.toHaveBeenCalled();
-  });
-
-  it("背景手動同步失敗或鎖已不屬於本次時仍 ack，不重試登入", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const failed = queueMessage({
-      type: "run-manual-sync",
-      connectorId: "cathaybk",
-      runId: "manual-run-1",
-    });
-    mocks.runQueuedManualSync.mockRejectedValueOnce(
-      new Error("synthetic bank failure"),
-    );
-    await consumeScheduledSyncQueue(queueBatch(failed), env());
-
-    const stale = queueMessage({
-      type: "run-manual-sync",
-      connectorId: "cathaybk",
-      runId: "manual-run-2",
-    });
-    mocks.runQueuedManualSync.mockResolvedValueOnce(false);
-    await consumeScheduledSyncQueue(queueBatch(stale), env());
-
-    for (const message of [failed, stale]) {
-      expect(message.ack).toHaveBeenCalledOnce();
-      expect(message.retry).not.toHaveBeenCalled();
-    }
-  });
-
-  it("Demo 模式不執行背景手動同步並釋放排入時的鎖", async () => {
-    const send = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const message = queueMessage({
-      type: "run-manual-sync",
-      connectorId: "cathaybk",
-      runId: "manual-run-1",
-    });
-
-    await consumeScheduledSyncQueue(queueBatch(message), {
-      ...env(send),
-      DEMO_MODE: "true",
-    } as Env);
-
-    expect(mocks.runQueuedManualSync).not.toHaveBeenCalled();
-    expect(mocks.abandonQueuedManualSync).toHaveBeenCalledWith(
-      expect.anything(),
-      "cathaybk",
-      "manual-run-1",
-      expect.any(String),
-    );
-    expect(send).not.toHaveBeenCalled();
-    expect(message.ack).toHaveBeenCalledOnce();
   });
 });

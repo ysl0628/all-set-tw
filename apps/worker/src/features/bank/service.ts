@@ -17,20 +17,46 @@ import {
 } from "./display";
 import { resolveCalculationExclusion } from "./calculation-service";
 import {
-  resolveClassifications,
+  classificationOverrideLookupIds,
+  classifyTransactions,
   type ClassificationResult,
 } from "../classification/service";
+import {
+  listClassificationOverrides,
+  listEnabledClassificationRules,
+  type ClassificationRuleMatchRow,
+} from "../classification/repository";
 import {
   findAutomaticCreditOffsetTransactionIds,
   findAutomaticTransferTransactionIds,
   getAutomaticTransferDay,
 } from "./transfer-matching";
 
+type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+// Started early and awaited later; settling keeps a rejection from going unhandled.
+function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
+  return promise.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+}
+
+function loadClassificationRules(db: D1Database) {
+  // Rules do not depend on the transactions, so fetch them in the first D1 round trip.
+  return settle(listEnabledClassificationRules(db));
+}
+
+export async function getBankAccounts(db: D1Database) {
+  return (await listBankAccounts(db)).map(normalizeBankAccountDisplay);
+}
+
 export async function getBankPage(
   db: D1Database,
   limit: number,
   cursor?: TransactionPageCursor,
 ) {
+  const rules = loadClassificationRules(db);
   const [accounts, transactions] = await Promise.all([
     listBankAccounts(db),
     listBankTransactions(db, limit + 1, cursor),
@@ -43,7 +69,7 @@ export async function getBankPage(
     accounts: withSharedCardBalanceAccounts(
       accounts.map(normalizeBankAccountDisplay),
     ),
-    transactions: await presentBankTransactions(db, page),
+    transactions: await presentBankTransactions(db, page, rules),
   };
 }
 
@@ -53,6 +79,7 @@ export async function getBankRange(
   days?: string[],
   accountRows?: Awaited<ReturnType<typeof listBankAccounts>>,
 ) {
+  const rules = loadClassificationRules(db);
   const [accounts, transactions] = await Promise.all([
     accountRows ? Promise.resolve(accountRows) : listBankAccounts(db),
     listBankTransactionsInRange(db, range, days),
@@ -61,24 +88,56 @@ export async function getBankRange(
     accounts: withSharedCardBalanceAccounts(
       accounts.map(normalizeBankAccountDisplay),
     ),
-    transactions: await presentBankTransactions(db, transactions),
+    transactions: await presentBankTransactions(db, transactions, rules),
   };
+}
+
+function loadClassificationOverrides(
+  db: D1Database,
+  transactions: BankTransactionPageRow[],
+) {
+  return settle(
+    transactions.length > 0
+      ? listClassificationOverrides(
+          db,
+          classificationOverrideLookupIds(transactions),
+        )
+      : Promise.resolve([]),
+  );
 }
 
 async function presentBankTransactions(
   db: D1Database,
   transactions: BankTransactionPageRow[],
+  rules: Promise<Settled<ClassificationRuleMatchRow[]>>,
 ) {
+  // Page overrides load beside the transfer candidates; only candidates from
+  // outside the page need a further round trip.
+  const pageOverrides = loadClassificationOverrides(db, transactions);
   // The counterpart can be on another page, so expand the set before classifying.
   const transactionsForClassification = await loadTransferCandidates(
     db,
     transactions,
   );
+  const pageIds = new Set(transactions.map((transaction) => transaction.id));
+  const [rulesResult, pageOverridesResult, candidateOverridesResult] =
+    await Promise.all([
+      rules,
+      pageOverrides,
+      loadClassificationOverrides(
+        db,
+        transactionsForClassification.filter(
+          (transaction) => !pageIds.has(transaction.id),
+        ),
+      ),
+    ]);
   let classificationMap: Map<string, ClassificationResult>;
   let classificationsReady = true;
   try {
-    classificationMap = await resolveClassifications(
-      db,
+    if (!rulesResult.ok) throw rulesResult.error;
+    if (!pageOverridesResult.ok) throw pageOverridesResult.error;
+    if (!candidateOverridesResult.ok) throw candidateOverridesResult.error;
+    classificationMap = classifyTransactions(
       transactionsForClassification.map((transaction) => ({
         id: transaction.id,
         description: transaction.description,
@@ -86,6 +145,8 @@ async function presentBankTransactions(
         sourceId: transaction.sourceId,
         amount: transaction.amount,
       })),
+      [...pageOverridesResult.value, ...candidateOverridesResult.value],
+      rulesResult.value,
     );
   } catch (error) {
     console.error("[classify] resolveClassifications failed:", error);

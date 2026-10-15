@@ -5,6 +5,7 @@ import { configEncryptionKey } from "../../platform/config";
 import { decryptJson, encryptJson } from "../../platform/crypto";
 import type { Env } from "../../platform/env";
 import { findConnectorSettings, saveConnectorSettings } from "./repository";
+import { ctbcPendingSessionSchema } from "../../sources/ctbc/protocol";
 
 export class ConnectorConfigMissingError extends Error {}
 export class InvalidConnectorConfigError extends Error {}
@@ -44,7 +45,7 @@ export async function getConnectorSettingsView(
   let sessionAvailable = false;
   let credentialsComplete = false;
   let verificationPending = false;
-  let verificationChannel: "email" | "sms" | null = null;
+  let verificationChannel: "app" | "email" | "sms" | null = null;
   let verificationExpiresAt: string | null = null;
   if (settings) {
     const stored = await decryptJson<Record<string, unknown>>(
@@ -52,7 +53,7 @@ export async function getConnectorSettingsView(
       configEncryptionKey(env),
     );
     credentialsComplete = connectorCatalog[connectorId].credentialFields.every(
-      (key) => typeof stored[key] === "string" && stored[key].length > 0,
+      ({ key }) => typeof stored[key] === "string" && stored[key].length > 0,
     );
     if (connectorId === "tdcc") {
       const session = stored.session;
@@ -75,6 +76,15 @@ export async function getConnectorSettingsView(
         stored.sessionCookies.length > 0 &&
         (connectorId !== "sinopac" ||
           stored.protocol === "sinopac-mobile-app-json-v1");
+    } else if (connectorId === "ctbc") {
+      const pending = ctbcPendingSessionSchema.safeParse(stored.pendingSession);
+      if (pending.success) {
+        verificationExpiresAt = pending.data.expiresAt;
+        verificationPending =
+          credentialsComplete &&
+          Date.parse(pending.data.expiresAt) > Date.now();
+        verificationChannel = verificationPending ? pending.data.method : null;
+      }
     } else if (connectorId === "cathaybk") {
       sessionAvailable = hasValidCathayTrustedDevice(stored.sessionCookies);
       verificationExpiresAt =
@@ -119,7 +129,8 @@ export async function updateConnectorSettings(
 ) {
   const definition = connectorCatalog[connectorId];
   const publicKeys: readonly string[] = definition.publicFields;
-  const hasSensitive = definition.credentialFields.some(
+  const credentialKeys = definition.credentialFields.map(({ key }) => key);
+  const hasSensitive = credentialKeys.some(
     (key) => rawConfig[key] !== undefined && rawConfig[key] !== "",
   );
   const now = new Date().toISOString();
@@ -150,10 +161,17 @@ export async function updateConnectorSettings(
     };
     shouldClearCursor =
       Boolean(existing) &&
-      fieldsChanged(definition.credentialFields, storedConfig, rawConfig);
+      fieldsChanged(credentialKeys, storedConfig, rawConfig);
     if (shouldClearCursor) {
       for (const key of definition.resetOnCredentialChangeFields) {
         delete mergedConfig[key];
+      }
+      if (
+        connectorId === "ctbc" &&
+        fieldsChanged(["userId", "account"], storedConfig, rawConfig)
+      ) {
+        delete mergedConfig.deviceCode;
+        delete mergedConfig.deviceSeed;
       }
     }
 

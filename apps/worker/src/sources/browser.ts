@@ -9,11 +9,20 @@ type SyncBrowserBinding = Parameters<typeof puppeteer.launch>[0] & {
   syncSignal?: AbortSignal;
 };
 
+/**
+ * 未經同步包裝的 Browser binding 是 Fetcher RPC stub，讀取任意屬性都會得到
+ * stub 而非 undefined；只接受真正的 AbortSignal，避免 AbortSignal.any 型別錯誤。
+ */
+function bindingSyncSignal(binding: SyncBrowserBinding) {
+  const signal: unknown = binding.syncSignal;
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
 function watchBrowserCancellation(
   browser: Awaited<ReturnType<typeof puppeteer.launch>>,
   binding: SyncBrowserBinding,
 ) {
-  const signal = binding.syncSignal;
+  const signal = bindingSyncSignal(binding);
   if (!signal) return browser;
   const close = () => {
     void closeBrowserSession(binding, browser);
@@ -33,7 +42,7 @@ export async function connectBrowserWithCancellation(
   binding: SyncBrowserBinding,
   sessionId: string,
 ) {
-  binding.syncSignal?.throwIfAborted();
+  bindingSyncSignal(binding)?.throwIfAborted();
   return watchBrowserCancellation(
     await puppeteer.connect(binding, sessionId),
     binding,
@@ -96,12 +105,13 @@ export async function launchBrowserWithRetry(
   binding: SyncBrowserBinding,
   options?: Parameters<typeof puppeteer.launch>[1],
 ) {
+  const syncSignal = bindingSyncSignal(binding);
   try {
-    binding.syncSignal?.throwIfAborted();
+    syncSignal?.throwIfAborted();
     const browser = await puppeteer.launch(
       {
         async fetch(input, init) {
-          binding.syncSignal?.throwIfAborted();
+          syncSignal?.throwIfAborted();
           const url = new URL(
             input instanceof Request ? input.url : String(input),
           );
@@ -118,11 +128,11 @@ export async function launchBrowserWithRetry(
 
           const request = new Request(input, init);
           for (let attempt = 0; ; attempt++) {
-            binding.syncSignal?.throwIfAborted();
+            syncSignal?.throwIfAborted();
             const response = await binding.fetch(
               new Request(request.clone() as Request, {
-                signal: binding.syncSignal
-                  ? AbortSignal.any([request.signal, binding.syncSignal])
+                signal: syncSignal
+                  ? AbortSignal.any([request.signal, syncSignal])
                   : request.signal,
               }),
             );
@@ -165,7 +175,7 @@ export async function launchBrowserWithRetry(
             // Leave the final response intact for Puppeteer's error handling.
             if (delayMs === undefined) return response;
             await response.body?.cancel();
-            await waitForBrowserRetry(delayMs, binding.syncSignal);
+            await waitForBrowserRetry(delayMs, syncSignal);
           }
         },
       },
@@ -311,7 +321,7 @@ export async function prepareBrowserLoginWithRetry<T>(
   options: LoginPreparationOptions<T>,
 ): Promise<{ browser: Browser; value: T }> {
   const { binding, connectorId } = options;
-  const signals = [binding.syncSignal, options.signal].filter(
+  const signals = [bindingSyncSignal(binding), options.signal].filter(
     (signal): signal is AbortSignal => Boolean(signal),
   );
   const signal = AbortSignal.any(signals);
