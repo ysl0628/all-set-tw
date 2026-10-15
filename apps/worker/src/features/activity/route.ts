@@ -1,9 +1,14 @@
 import type { Hono } from "hono";
+import type { InvoiceTransactionPreference } from "@taiwan-fin-hub/shared";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError, parseKeysetPagination } from "../../platform/http";
+import {
+  monthRangeQuerySchema,
+  resolveMonthDateRange,
+} from "../../platform/month-range";
 import { validationHook } from "../../platform/validation";
 import { searchActivity } from "./search-service";
 import { listInvoiceTransactionPreferences } from "./repository";
@@ -62,8 +67,20 @@ function registerActivityRoutes(api: Hono<AppBindings>) {
     },
   );
 
-  api.get("/activity/invoice-mappings", async (c) =>
-    c.json(await listInvoiceTransactionPreferences(c.env.DB)),
+  api.get(
+    "/activity/invoice-mappings",
+    zValidator(
+      "query",
+      monthRangeQuerySchema,
+      validationHook("INVALID_REQUEST", "Invalid month range."),
+    ),
+    async (c) =>
+      c.json(
+        (await listInvoiceTransactionPreferences(
+          c.env.DB,
+          resolveMonthDateRange(c.req.valid("query")),
+        )) satisfies InvoiceTransactionPreference[],
+      ),
   );
 
   api.put(
@@ -75,16 +92,21 @@ function registerActivityRoutes(api: Hono<AppBindings>) {
     ),
     async (c) =>
       c.json(
-        await linkInvoiceToTransaction(
+        (await linkInvoiceToTransaction(
           c.env.DB,
           c.req.param("invoiceId"),
           c.req.valid("json").transactionId,
-        ),
+        )) satisfies InvoiceTransactionPreference,
       ),
   );
 
   api.delete("/activity/invoice-mappings/:invoiceId", async (c) =>
-    c.json(await keepInvoiceSeparate(c.env.DB, c.req.param("invoiceId"))),
+    c.json(
+      (await keepInvoiceSeparate(
+        c.env.DB,
+        c.req.param("invoiceId"),
+      )) satisfies InvoiceTransactionPreference,
+    ),
   );
 }
 

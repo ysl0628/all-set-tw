@@ -17,8 +17,9 @@ import type {
   BankBalanceSnapshot,
   BankTransaction,
   CreditCardBill,
-} from "@taiwan-fin-hub/shared";
+} from "../financial-types";
 import { BANK_SYNC_MONTHS } from "../sync-window";
+import { reportSyncProgress } from "../sync-progress";
 import { isNoCreditCardMessage } from "../credit-card-status";
 import {
   type CathaybkConfig,
@@ -273,6 +274,7 @@ async function scrapeWithBrowser(
       }
     }
 
+    reportSyncProgress("fetching");
     console.log("[cathaybk] collecting deposit accounts");
     phase = "deposits";
     const deposits = await scrapeDeposits(page, syncWindowDays);

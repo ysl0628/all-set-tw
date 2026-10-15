@@ -1,7 +1,7 @@
-import type { ConnectorId } from "@taiwan-fin-hub/shared";
-import type { Env, ScheduledSyncQueueMessage } from "../../../platform/env";
+import type { Env, SyncQueueMessage } from "../../../platform/env";
 import { isDemoMode } from "../../../platform/http";
 import { runSchedulerTick } from "./scheduler";
+import { processQueuedManualSync } from "../manual-sync";
 import {
   failEinvoiceSyncRun,
   isEinvoiceUserActionError,
@@ -13,10 +13,6 @@ import {
 } from "../../../sources/tdcc/sync";
 import { isUserActionError, safeErrorMessage } from "../errors";
 import { recoverStalledSyncRuns } from "./recovery";
-import { abandonQueuedManualSync, runQueuedManualSync } from "../manual-sync";
-import { runConnectorSync } from "../registry";
-import { SYNC_SCOPE_ALL } from "../types";
-import { CathayOtpSessionExpiredError } from "../../../sources/cathaybk/connector";
 
 const queueController = {
   cron: "queue:scheduled-sync",
@@ -27,6 +23,7 @@ export const EINVOICE_SYNC_CHAIN_DELAY_SECONDS = 1;
 export const TDCC_SYNC_CHAIN_DELAY_SECONDS = 1;
 const EINVOICE_MAX_QUEUE_ATTEMPTS = 3;
 const TDCC_MAX_QUEUE_ATTEMPTS = 3;
+const MANUAL_SYNC_MAX_QUEUE_ATTEMPTS = 3;
 export const DEMO_MODE_PARKED_CHUNK_DELAY_SECONDS = 60 * 60;
 
 export async function enqueueScheduledSync(env: Env, delaySeconds = 0) {
@@ -75,8 +72,21 @@ export async function enqueueTdccSyncChunk(
   await env.SYNC_QUEUE.send(message);
 }
 
+export async function enqueueManualSyncRun(
+  env: Env,
+  runId: string,
+  delaySeconds = 0,
+) {
+  const message = { type: "run-manual-sync", runId } as const;
+  if (delaySeconds > 0) {
+    await env.SYNC_QUEUE.send(message, { delaySeconds });
+    return;
+  }
+  await env.SYNC_QUEUE.send(message);
+}
+
 export async function consumeScheduledSyncQueue(
-  batch: MessageBatch<ScheduledSyncQueueMessage>,
+  batch: MessageBatch<SyncQueueMessage>,
   env: Env,
 ) {
   if (isDemoMode(env)) {
@@ -119,15 +129,17 @@ export async function consumeScheduledSyncQueue(
 }
 
 // Demo mode must not contact external services. Scheduler kicks are stateless
-// and are dropped; durable run chunks are re-sent later so active runs resume
-// once demo mode is turned off instead of staying stuck without a continuation.
+// and are dropped; run messages are re-sent later so active runs resume or time
+// out once demo mode is turned off instead of staying stuck without a message.
 async function parkMessageInDemoMode(
-  message: Message<ScheduledSyncQueueMessage>,
+  message: Message<SyncQueueMessage>,
   env: Env,
 ) {
   const body = message.body;
   const parked =
-    body.type === "run-einvoice-chunk" || body.type === "run-tdcc-chunk";
+    body.type === "run-einvoice-chunk" ||
+    body.type === "run-tdcc-chunk" ||
+    body.type === "run-manual-sync";
   console.info(
     JSON.stringify({
       event: "scheduled_sync_queue_skipped_demo_mode",
@@ -136,15 +148,6 @@ async function parkMessageInDemoMode(
       parked,
     }),
   );
-  if (body.type === "run-manual-sync") {
-    // 手動同步不保留到 Demo 關閉後；結束並釋放排入時取得的鎖。
-    await abandonQueuedManualSync(
-      env,
-      body.connectorId,
-      body.runId,
-      "Demo site 已停用連接器同步。",
-    ).catch(() => undefined);
-  }
   if (!parked) {
     message.ack();
     return;
@@ -159,61 +162,45 @@ async function parkMessageInDemoMode(
   }
 }
 
-// 一律 ack、不 retry：重送會再次登入銀行，可能重寄 OTP 或觸發銀行的安全機制。
-// 成功、失敗與需要使用者處理的結果都已由共用流程寫入 sync job。
 async function consumeManualSyncMessage(
-  message: Message<ScheduledSyncQueueMessage>,
+  message: Message<SyncQueueMessage>,
   env: Env,
 ) {
   if (message.body.type !== "run-manual-sync") return;
-  const { connectorId, runId } = message.body;
+  const { runId } = message.body;
   try {
-    const started = await runQueuedManualSync(
-      env,
-      connectorId,
-      runId,
-      (syncEnv) => runQueuedConnectorSync(syncEnv, connectorId),
+    const result = await processQueuedManualSync(env, runId);
+    if (result.status === "busy") {
+      try {
+        await enqueueManualSyncRun(env, runId, result.retryAfterSeconds);
+        message.ack();
+      } catch {
+        message.retry({ delaySeconds: result.retryAfterSeconds });
+      }
+      return;
+    }
+    message.ack();
+  } catch (error) {
+    // Redelivery cannot log in twice: a claimed run is no longer queued.
+    // Runs left behind are closed by recoverStalledSyncRuns.
+    console.error(
+      JSON.stringify({
+        event: "manual_sync_queue_message_failed",
+        runId,
+        attempts: message.attempts,
+        error: safeErrorMessage(error),
+      }),
     );
-    if (!started) {
-      console.warn(
-        JSON.stringify({
-          event: "manual_sync_queue_skipped",
-          connectorId,
-          runId,
-          reason: "lock_not_owned",
-        }),
-      );
+    if (message.attempts >= MANUAL_SYNC_MAX_QUEUE_ATTEMPTS) {
+      message.ack();
+      return;
     }
-  } catch (error) {
-    if (!isUserActionError(error)) {
-      console.error(
-        JSON.stringify({
-          event: "manual_sync_queue_failed",
-          connectorId,
-          runId,
-          error: safeErrorMessage(error),
-        }),
-      );
-    }
-  }
-  message.ack();
-}
-
-async function runQueuedConnectorSync(env: Env, connectorId: ConnectorId) {
-  const run = () =>
-    runConnectorSync(env, connectorId, "manual", SYNC_SCOPE_ALL, {});
-  try {
-    return await run();
-  } catch (error) {
-    // 過期的國泰 OTP 工作階段在登入銀行前即失敗，sync 已清除該工作階段；
-    // 比照原本前端行為以全新登入重試一次。其他錯誤不重試。
-    if (error instanceof CathayOtpSessionExpiredError) return run();
-    throw error;
+    message.retry({ delaySeconds: retryDelaySeconds(message.attempts) });
   }
 }
 
 async function consumeTdccChunkMessage(
-  message: Message<ScheduledSyncQueueMessage>,
+  message: Message<SyncQueueMessage>,
   env: Env,
 ) {
   if (message.body.type !== "run-tdcc-chunk") return;
@@ -259,7 +246,7 @@ async function consumeTdccChunkMessage(
 }
 
 async function consumeEinvoiceChunkMessage(
-  message: Message<ScheduledSyncQueueMessage>,
+  message: Message<SyncQueueMessage>,
   env: Env,
 ) {
   if (message.body.type !== "run-einvoice-chunk") return;

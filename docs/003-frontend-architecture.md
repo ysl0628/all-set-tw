@@ -25,7 +25,11 @@ apps/web/src/
 - 前後端都使用且穩定的 API contract 應逐步移到根目錄的 `shared/`；只用於前端組合畫面的 view model 可留在 `apps/web/src/data`。
 - 根目錄的 `shared/` 是唯一跨前後端共用的 workspace 套件；資料庫與連接器由 `apps/worker` 管理，前端不得引用 Worker 內部模組。
 
-銀行與信用卡帳單 API 的 response 契約定義於 `shared/bank-api.ts`，前端 `data/bank/types.ts` 僅提供既有名稱的 type re-export。Worker 在銀行 route 的 JSON 回傳處以 `satisfies` 檢查相同契約；欄位保留現有回應的 `null` 與帳單數值 flag，不將 connector 正規化資料或 ORM row 當作 API response 型別。資料來源 ID 保持現有回應的 string，catalog 的 `ConnectorId` 用於已驗證的 connector 註冊與操作。
+銀行與信用卡帳單 API 的 response 契約定義於 `shared/api/bank.ts`，前端 `data/bank/types.ts` 僅提供既有名稱的 type re-export。Worker 在銀行 route 的 JSON 回傳處以 `satisfies` 檢查相同契約；欄位保留現有回應的 `null` 與帳單數值 flag，不將 connector 正規化資料或 ORM row 當作 API response 型別。資料來源 ID 保持現有回應的 string，catalog 的 `ConnectorId` 用於已驗證的 connector 註冊與操作。
+
+同步排程、連接器設定狀態與分類規則的 response 契約分別定義於 `shared/api/` 的 `sync.ts`、`connectors.ts` 與 `classification.ts`，`data/connectors/types.ts` 與 `data/classification/types.ts` 同樣以既有名稱 re-export；發票配對偏好 `InvoiceTransactionPreference` 由 `data/invoices/types.ts` re-export。
+`ApiRequestError.code` 的型別為共用的 `ApiErrorCode` 加上前端自用的 `REQUEST_FAILED`，sync job 的 `lastErrorCode` 與 `manualRun.errorCode` 為 `SyncErrorCode`；比對錯誤代碼時直接比較這些欄位，拼錯或已移除的代碼會在型別檢查失敗。
+排程間隔選項與顯示文字集中於 `features/settings/model/schedule.ts`，由共用的 `SYNC_INTERVAL_MINUTES` 產生；新增間隔時若缺少顯示文字，型別檢查會失敗。
 
 ## Svelte 檔案
 
@@ -83,9 +87,6 @@ npm run verify:web
 單一卡片的溢繳餘額保留正號並標示無需繳款。
 信用卡餘額未知時顯示「剩餘應繳金額未取得」；最近帳單明確未繳清時顯示「帳單待繳」與繳款期限，
 不僅顯示期限，也不將缺少的繳款狀態當成已繳。
-卡片帳戶帶有 `balanceAccountId` 時，餘額已計入同卡戶的另一個帳戶（如玉山多卡的摘要帳戶），
-顯示「已併入卡戶」，不視為負債資料不完整。
-這類卡片若有自己的帳單（分卡本期消費小計），改以中性色顯示最新一期小計，不計入負債。
 
 活動頁手機列表、桌面列表與詳情統一以台幣顯示；外幣交易沿用分類圖表的目前匯率，
 標示「約」並保留原幣副標示，詳情列出匯率與更新時間。資料庫原始金額與幣別不變，
@@ -104,22 +105,10 @@ npm run verify:web
 尚無匯率時顯示「尚未取得」，
 按「更新」後同步取得來源支援的持有幣別。未提供的幣別繼續顯示「尚未取得」，已有匯率則保留原值。
 
-## 機構活動篩選
-
-資產頁的金融機構詳情提供「查看消費紀錄」，前往活動頁並只保留該機構銀行帳戶與信用卡
-（依 `ActivityItem.accountId`）的活動；月份收支、分類比例、現金流趨勢與列表都套用同一範圍。
-篩選只存在於 App 的導覽狀態，從導覽列或其他頁面進入活動頁時清除；發票與投資活動沒有帳戶，
-不會出現在機構篩選中。搜尋模式的分頁結果在前端過濾，因此每批顯示筆數可能少於分頁大小。
-進入時若當月沒有該機構活動，會自動切到近六個月內最近一個有活動的月份；每次指定機構只調整一次。
-
-## 資料來源排序
-
-設定頁與手機「更多」頁的資料來源清單，已設定（`configured`）的來源排在前面，其餘維持
-`connectorCatalog` 的原順序。
-
 ## 總覽同步明細
 
-`LatestSyncReportCard` 顯示「最近一次排程同步」，展開「查看各資料來源」後直接列出各來源本次活動。
+`LatestSyncReportCard` 顯示「最近一次排程同步」，展開「查看各資料來源」後直接列出各來源本次活動；
+來源依 `compareConnectorOrder` 按 catalog 順序排列，與資料來源頁一致。
 `SyncActivityDetails` 展示該次同步的活動名稱、標記與原幣金額；來源區塊展開時以一次
 `GET /api/sync-reports/:batchId/activities` 載入全部來源明細並支援重試。
 明細展示新增活動、已入帳、補上發票及原幣金額，沿用全域隱藏金額設定。
@@ -128,6 +117,14 @@ npm run verify:web
 同步報告不顯示快照的匯率提示；目前資產的缺少匯率提示由總覽與資產清冊提供。
 
 ## 同步狀態與重試
+
+所有來源的 `ConnectorPanel` 在首次成功同步前提示會自動開啟排程；之後手動關閉的設定會保留。
+
+中信的 `CtbcVerification` 子元件使用設定 API 的驗證方式與到期時間顯示 App 核准或
+四位 Email OTP，手動呼叫同一 `/api/connectors/ctbc/sync` 接續驗證。
+等待期間停用一般同步按鈕，不自動輪詢銀行或重送 OTP；到期後由使用者按「重新開始驗證」。
+介面明確說明核准適用當次登入，目前未支援網銀信任瀏覽器，後續同步仍可能需要核准。
+驗證後刷新設定、同步工作與金融資料；帳密儲存後重設本機驗證提示。
 
 預設排程與來源自訂排程的每週執行日共用 `WeekdayPicker`，可複選並至少保留一天，
 所有勾選星期共用同一個開始時間（Asia/Taipei）。前端使用 API 已正規化的
@@ -141,4 +138,16 @@ Demo 模式與排程資料尚未載入時停用編輯。
 
 `ConnectorPanel` 依 `GET /api/sync-jobs` 的 `running` 與 `phase` 追蹤電子發票／集保 active run，不能只依 connector lock 到期判定完成。API 同時提供 run ID、最近狀態更新時間與最短重試等待秒數；一般同步的狀態時間可能包含 heartbeat，不能當成金融資料更新時間。
 `phase = stalled` 時保留 polling，顯示停滯提示與「重試同步」，補送既有 run 的 continuation；集保保留原 run 的 scope。有效 lease 下的工作仍禁止重複同步，重試排入 Queue 後須等待 lifecycle 完成才顯示成功。
-國泰世華的一般同步回傳 202（`status: "queued"`）後，`ConnectorPanel` 以送出前的 `lastRunAt` 為基準輪詢 sync job，直到不再 `running` 且 `lastRunAt` 改變，最長 20 分鐘；期間可離開頁面。重新整理後若 job 仍在執行，會自動接續輪詢。結果為 `needs_user_action` 時不顯示錯誤，改由重新載入的連接器設定還原驗證步驟。
+
+一般銀行不帶輸入的手動同步回傳 202 後在背景執行，離開或重新整理頁面不影響同步。
+`syncJobsQuery` 在任一來源 `running` 時每 3 秒重新查詢，全部閒置即停止。狀態列以一行顯示
+`phase` 對應的階段（排隊中、正在登入、正在取得資料、正在儲存結果）或最近結果，瀏覽器銀行另附登入
+保存狀態；自動同步開關以「開啟／關閉自動同步」按鈕表示。來源執行中
+（含排隊、排程與其他手動同步）時停用該來源的同步與人工驗證按鈕，並顯示「排隊中…」、
+「同步中…」或「排程同步中…」。`ConnectorPanel` 記住本頁送出的背景 run ID，等
+`manualRun` 結案後沿用同步請求的成功／錯誤處理；失敗時以 `manualRun.errorCode` 建立
+`ApiRequestError`，接續人工驗證碼、兆豐簡訊 OTP、國泰／中信驗證與集保 OTP 等既有流程。
+回到頁面時若最近結果為 `needs_user_action` 且 `lastErrorCode` 可接續（人工驗證碼、
+三分鐘內的兆豐 OTP、集保 OTP），顯示「處理」提示。首次同步成功後開啟排程由後端處理，
+前端不另外送出排程更新。帶驗證碼或 OTP 的接續請求仍在 request 內完成；請求被中斷時改以
+輪詢 sync job 判斷結果。集保首次連線排入背景後，等 Queue 初始化結果決定進入 OTP 步驟或完成。
