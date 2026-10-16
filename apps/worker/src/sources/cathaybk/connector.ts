@@ -1357,11 +1357,17 @@ async function chooseCathayComboboxOption(
 
   await page.focus(`[data-cathay-combobox="${kind}"]`);
   await page.keyboard.press("ArrowDown");
-  await page.waitForFunction(
-    () =>
-      document.querySelectorAll("[role='option'], [id*='-option-']").length > 0,
-    { timeout: 5000 },
-  );
+  await page
+    .waitForFunction(
+      () =>
+        document.querySelectorAll("[role='option'], [id*='-option-']").length >
+        0,
+      { timeout: 5000 },
+    )
+    .catch(async (error: unknown) => {
+      await logCathayComboboxWaitFailed(page, kind, "options", expected, error);
+      throw error;
+    });
   const selected = await page.evaluate(
     (target: CathayCombobox, match: string) => {
       const option = Array.from(
@@ -1383,20 +1389,93 @@ async function chooseCathayComboboxOption(
   if (!selected) {
     throw new Error("國泰世華交易頁面找不到指定帳號或期間，未更新資料。");
   }
-  await page.waitForFunction(
-    (target: CathayCombobox, match: string) => {
-      const text = document
-        .querySelector<HTMLElement>(
-          `[data-cathay-combobox-control="${target}"]`,
-        )
-        ?.innerText.replace(/\s+/g, "");
-      return target === "account"
-        ? text?.match(/\d{10,}/)?.[0] === match
-        : text === match.replace(/\s+/g, "");
-    },
-    { timeout: 5000 },
-    kind,
-    expected,
+  await page
+    .waitForFunction(
+      (target: CathayCombobox, match: string) => {
+        const text = document
+          .querySelector<HTMLElement>(
+            `[data-cathay-combobox-control="${target}"]`,
+          )
+          ?.innerText.replace(/\s+/g, "");
+        return target === "account"
+          ? text?.match(/\d{10,}/)?.[0] === match
+          : text === match.replace(/\s+/g, "");
+      },
+      { timeout: 5000 },
+      kind,
+      expected,
+    )
+    .catch(async (error: unknown) => {
+      await logCathayComboboxWaitFailed(
+        page,
+        kind,
+        "selection",
+        expected,
+        error,
+      );
+      throw error;
+    });
+}
+
+/**
+ * 記錄下拉選單等待逾時時的頁面狀態，區分選項未展開與選取後顯示值不符。
+ * 長串數字（帳號）只保留末四碼，不記錄金額或其他頁面內容。
+ */
+async function logCathayComboboxWaitFailed(
+  page: Page,
+  kind: CathayCombobox,
+  step: "options" | "selection",
+  expected: string,
+  error: unknown,
+) {
+  const state = await page
+    .evaluate((target: CathayCombobox) => {
+      const mask = (value: string) =>
+        value
+          .replace(/\s+/g, "")
+          .replace(/\d{6,}/g, (digits) => `***${digits.slice(-4)}`)
+          .slice(0, 40);
+      const input = document.querySelector<HTMLInputElement>(
+        `[data-cathay-combobox="${target}"]`,
+      );
+      const control = document.querySelector<HTMLElement>(
+        `[data-cathay-combobox-control="${target}"]`,
+      );
+      const options = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          "[role='option'], [id*='-option-']",
+        ),
+      );
+      return {
+        inputFound: Boolean(input),
+        inputFocused: input !== null && document.activeElement === input,
+        ariaExpanded: input?.getAttribute("aria-expanded") ?? null,
+        comboboxCount: document.querySelectorAll("input[role='combobox']")
+          .length,
+        controlText: control ? mask(control.innerText) : null,
+        optionCount: options.length,
+        optionTexts: options
+          .slice(0, 12)
+          .map((option) => mask(option.textContent ?? "")),
+        listboxCount: document.querySelectorAll("[role='listbox']").length,
+        loadingVisible: Array.from(
+          document.querySelectorAll<HTMLElement>(
+            "[class*='loading'], [class*='spinner'], [aria-busy='true']",
+          ),
+        ).some((element) => element.offsetParent !== null),
+      };
+    }, kind)
+    .catch(() => null);
+  console.error(
+    JSON.stringify({
+      event: "cathaybk_combobox_wait_failed",
+      kind,
+      step,
+      expected: kind === "account" ? maskAccountNumber(expected) : expected,
+      errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+      currentUrl: safeCathayDiagnosticUrl(page.url()),
+      state,
+    }),
   );
 }
 
@@ -1465,10 +1544,24 @@ async function readCathayQueryResponse(
     // Register both listeners before the action. A response from an older
     // request cannot satisfy this wait, even when its datas array is empty.
     const [response] = await Promise.all([
-      page.waitForResponse((response) => response.request() === query, {
-        timeout,
-        signal: controller.signal,
-      }),
+      page
+        .waitForResponse((response) => response.request() === query, {
+          timeout,
+          signal: controller.signal,
+        })
+        .catch((error: unknown) => {
+          console.error(
+            JSON.stringify({
+              event: "cathaybk_query_wait_failed",
+              api,
+              requestSent: query !== undefined,
+              timeoutMs: timeout,
+              errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+              currentUrl: safeCathayDiagnosticUrl(page.url()),
+            }),
+          );
+          throw error;
+        }),
       action(),
     ]);
     assertCathayNotLoggedOut(page);
@@ -1573,9 +1666,19 @@ async function scrapeDeposits(
           if (!clicked) {
             throw new Error("國泰世華存款帳戶無法開啟，未更新資料。");
           }
-          await page.waitForSelector("input[role='combobox']", {
-            timeout: 15000,
-          });
+          await page
+            .waitForSelector("input[role='combobox']", { timeout: 15000 })
+            .catch((error: unknown) => {
+              console.error(
+                JSON.stringify({
+                  event: "cathaybk_deposit_detail_wait_failed",
+                  errorType:
+                    error instanceof Error ? error.name : "UNKNOWN_ERROR",
+                  currentUrl: safeCathayDiagnosticUrl(page.url()),
+                }),
+              );
+              throw error;
+            });
         },
       );
       parseCathayDepositTransactions(initial, acct.acctNo);
