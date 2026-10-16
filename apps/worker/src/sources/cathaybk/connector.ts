@@ -1500,6 +1500,8 @@ async function dismissCathayNoticeModals(page: Page) {
       if (button) button.dataset.cathayNoticeDismiss = "true";
       return {
         heading,
+        // 只用於判斷公告是否換成下一則，不寫入 log。
+        content: dialog.innerText.replace(/\s+/g, "").slice(0, 300),
         action: closeButton ? "close" : nextButton ? "next" : "escape",
         buttonText: button ? label(button).slice(0, 20) : null,
       } as const;
@@ -1514,16 +1516,16 @@ async function dismissCathayNoticeModals(page: Page) {
     } else {
       await page.click('[data-cathay-notice-dismiss="true"]');
     }
-    // 「下一則」留在同一個視窗，等標題換成下一則；其他動作等視窗關閉。
-    const advanced = await page
+    // 公告可能逐則顯示在同一個視窗：「下一則」只換標題編號，明細頁連續公告的標題相同，
+    // 因此視窗關閉、標題或內容改變都視為已處理，再由下一輪檢查是否仍有公告。
+    const result = await page
       .waitForFunction(
-        (action: string, previousHeading: string) => {
+        (previousHeading: string, previousContent: string) => {
           const dialog = document.querySelector<HTMLElement>(
             "[data-cathay-notice-dialog]",
           );
           if (!dialog || dialog.getBoundingClientRect().height === 0)
-            return true;
-          if (action !== "next") return false;
+            return "closed";
           const heading = (
             dialog.querySelector<HTMLElement>(
               "header, h1, h2, h3, h4, [class*='header'], [class*='title']",
@@ -1531,23 +1533,28 @@ async function dismissCathayNoticeModals(page: Page) {
           )
             .replace(/\s+/g, "")
             .slice(0, 40);
-          return heading !== previousHeading;
+          const content = dialog.innerText.replace(/\s+/g, "").slice(0, 300);
+          if (heading !== previousHeading || content !== previousContent)
+            return "changed";
+          return false;
         },
         { timeout: 5000 },
-        notice.action,
         notice.heading,
+        notice.content,
       )
       .then(
-        () => true,
-        () => false,
+        async (handle) => (await handle.jsonValue()) as "closed" | "changed",
+        () => "unchanged" as const,
       );
+    const advanced = result !== "unchanged";
     console.log(
       JSON.stringify({
         event: "cathaybk_notice_dismissed",
         heading: notice.heading,
         action: notice.action,
         buttonText: notice.buttonText,
-        advanced,
+        result,
+        noticeIndex: count + 1,
       }),
     );
     if (!advanced) {
