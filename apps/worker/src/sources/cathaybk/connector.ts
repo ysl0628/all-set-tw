@@ -1476,14 +1476,17 @@ async function dismissCathayNoticeModals(page: Page) {
       const buttons = Array.from(
         dialog.querySelectorAll<HTMLElement>("button, a, [role='button']"),
       ).filter(visible);
+      // 按鈕文字與 aria-label 常相同，優先取文字，避免串接後無法完整比對。
       const label = (element: HTMLElement) =>
-        [element.textContent, element.getAttribute("aria-label")]
-          .filter(Boolean)
-          .join(" ")
-          .replace(/\s+/g, "");
+        (
+          element.textContent?.trim() ||
+          element.getAttribute("aria-label") ||
+          ""
+        ).replace(/\s+/g, "");
+      // 「下次再提醒」只關閉本次公告；不點「不要再顯示」，避免改動使用者的網銀偏好。
       const closeButton =
         buttons.find((element) =>
-          /^(我知道了|知道了|確定|確認|關閉|關閉視窗|OK)$/i.test(
+          /^(下次再提醒|我知道了|知道了|確定|確認|關閉|關閉視窗|OK)$/i.test(
             label(element),
           ),
         ) ??
