@@ -1405,6 +1405,135 @@ async function chooseCathayComboboxOption(
     });
 }
 
+const CATHAY_NOTICE_HEADING_PATTERN = /公告|通知|維護/;
+
+/**
+ * 明細頁可能先跳出公告視窗再顯示查詢表單；等待表單或公告任一出現，有公告就先關閉。
+ * 逾時不在這裡判斷，交由後續的表單等待記錄診斷。
+ */
+async function dismissCathayNoticeWhenDetailLoads(page: Page) {
+  await page
+    .waitForFunction(
+      (pattern: string) =>
+        document.querySelector("input[role='combobox']") !== null ||
+        Array.from(
+          document.querySelectorAll<HTMLElement>(
+            "section.chakra-modal__content, [role='dialog']",
+          ),
+        ).some((dialog) => new RegExp(pattern).test(dialog.innerText)),
+      { timeout: 15000 },
+      CATHAY_NOTICE_HEADING_PATTERN.source,
+    )
+    .catch(() => null);
+  await dismissCathayNoticeModals(page);
+}
+
+/**
+ * 關閉國泰網銀的公告視窗（例如「系統維護公告」）。公告會搶走焦點並蓋住查詢表單。
+ * 只處理標題含公告／通知／維護的視窗，其他對話框不自動點選；關不掉時停止同步。
+ */
+async function dismissCathayNoticeModals(page: Page) {
+  for (let count = 0; ; count += 1) {
+    const notice = await page.evaluate((pattern: string) => {
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden"
+        );
+      };
+      const dialog = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          "section.chakra-modal__content, [role='dialog']",
+        ),
+      ).find((element) => {
+        if (!visible(element)) return false;
+        const heading =
+          element.querySelector<HTMLElement>(
+            "header, h1, h2, h3, h4, [class*='header'], [class*='title']",
+          )?.innerText ?? "";
+        return new RegExp(pattern).test(heading.replace(/\s+/g, ""));
+      });
+      if (!dialog) return null;
+      document
+        .querySelectorAll("[data-cathay-notice-dialog]")
+        .forEach((element) =>
+          element.removeAttribute("data-cathay-notice-dialog"),
+        );
+      dialog.dataset.cathayNoticeDialog = "true";
+      const heading = (
+        dialog.querySelector<HTMLElement>(
+          "header, h1, h2, h3, h4, [class*='header'], [class*='title']",
+        )?.innerText ?? ""
+      )
+        .replace(/\s+/g, "")
+        .slice(0, 40);
+      const buttons = Array.from(
+        dialog.querySelectorAll<HTMLElement>("button, a, [role='button']"),
+      ).filter(visible);
+      const label = (element: HTMLElement) =>
+        [element.textContent, element.getAttribute("aria-label")]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\s+/g, "");
+      const button =
+        buttons.find((element) =>
+          /^(我知道了|知道了|確定|確認|關閉|關閉視窗|OK)$/i.test(
+            label(element),
+          ),
+        ) ??
+        buttons.find(
+          (element) =>
+            element.classList.contains("chakra-modal__close-btn") ||
+            /關閉|close/i.test(element.getAttribute("aria-label") ?? ""),
+        );
+      if (button) button.dataset.cathayNoticeDismiss = "true";
+      return {
+        heading,
+        buttonText: button ? label(button).slice(0, 20) : null,
+      };
+    }, CATHAY_NOTICE_HEADING_PATTERN.source);
+    if (!notice) return;
+    if (count >= 5) {
+      throw new Error("國泰世華交易頁面的公告視窗過多，未更新資料。");
+    }
+
+    if (notice.buttonText !== null) {
+      await page.click('[data-cathay-notice-dismiss="true"]');
+    } else {
+      await page.keyboard.press("Escape");
+    }
+    const closed = await page
+      .waitForFunction(
+        () => {
+          const dialog = document.querySelector<HTMLElement>(
+            "[data-cathay-notice-dialog]",
+          );
+          return !dialog || dialog.getBoundingClientRect().height === 0;
+        },
+        { timeout: 5000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+    console.log(
+      JSON.stringify({
+        event: "cathaybk_notice_dismissed",
+        heading: notice.heading,
+        buttonText: notice.buttonText,
+        closed,
+      }),
+    );
+    if (!closed) {
+      throw new Error("國泰世華交易頁面的公告視窗無法關閉，未更新資料。");
+    }
+  }
+}
+
 const CATHAY_COMBOBOX_OPTIONS_SELECTOR = "[role='option'], [id*='-option-']";
 
 /**
@@ -1428,6 +1557,7 @@ async function openCathayCombobox(
         () => false,
       );
 
+  await dismissCathayNoticeModals(page);
   await page.focus(`[data-cathay-combobox="${kind}"]`);
   await page.keyboard.press("ArrowDown");
   if (await optionsVisible(3000)) return;
@@ -1781,6 +1911,7 @@ async function scrapeDeposits(
           if (!clicked) {
             throw new Error("國泰世華存款帳戶無法開啟，未更新資料。");
           }
+          await dismissCathayNoticeWhenDetailLoads(page);
           await page
             .waitForSelector("input[role='combobox']", { timeout: 15000 })
             .catch(async (error: unknown) => {
