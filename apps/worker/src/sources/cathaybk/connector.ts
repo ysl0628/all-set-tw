@@ -1355,19 +1355,7 @@ async function chooseCathayComboboxOption(
     throw new Error("國泰世華交易頁面找不到帳號或期間選單，未更新資料。");
   }
 
-  await page.focus(`[data-cathay-combobox="${kind}"]`);
-  await page.keyboard.press("ArrowDown");
-  await page
-    .waitForFunction(
-      () =>
-        document.querySelectorAll("[role='option'], [id*='-option-']").length >
-        0,
-      { timeout: 5000 },
-    )
-    .catch(async (error: unknown) => {
-      await logCathayComboboxWaitFailed(page, kind, "options", expected, error);
-      throw error;
-    });
+  await openCathayCombobox(page, kind, expected);
   const selected = await page.evaluate(
     (target: CathayCombobox, match: string) => {
       const option = Array.from(
@@ -1415,6 +1403,65 @@ async function chooseCathayComboboxOption(
       );
       throw error;
     });
+}
+
+const CATHAY_COMBOBOX_OPTIONS_SELECTOR = "[role='option'], [id*='-option-']";
+
+/**
+ * 先以鍵盤展開；選單沒出現時（輸入框可能失去焦點）改用滑鼠點選單本體，
+ * 與使用者操作相同。兩種方式都失敗才記錄診斷並停止。
+ */
+async function openCathayCombobox(
+  page: Page,
+  kind: CathayCombobox,
+  expected: string,
+) {
+  const optionsVisible = (timeout: number) =>
+    page
+      .waitForFunction(
+        (selector: string) => document.querySelectorAll(selector).length > 0,
+        { timeout },
+        CATHAY_COMBOBOX_OPTIONS_SELECTOR,
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+
+  await page.focus(`[data-cathay-combobox="${kind}"]`);
+  await page.keyboard.press("ArrowDown");
+  if (await optionsVisible(3000)) return;
+
+  const clickTarget = await page.evaluate((target: CathayCombobox) => {
+    const input = document.querySelector<HTMLElement>(
+      `[data-cathay-combobox="${target}"]`,
+    );
+    let element: HTMLElement | null = input;
+    for (let depth = 0; depth < 6 && element; depth += 1) {
+      if (/control/i.test(element.className)) break;
+      element = element.parentElement;
+    }
+    const clickable = element ?? input;
+    if (!clickable) return false;
+    clickable.dataset.cathayComboboxClick = target;
+    return true;
+  }, kind);
+  if (clickTarget) {
+    await page.click(`[data-cathay-combobox-click="${kind}"]`);
+    if (await optionsVisible(5000)) {
+      console.warn(
+        JSON.stringify({
+          event: "cathaybk_combobox_opened_by_click",
+          kind,
+        }),
+      );
+      return;
+    }
+  }
+
+  const error = new Error("國泰世華交易頁面的下拉選單無法展開，未更新資料。");
+  await logCathayComboboxWaitFailed(page, kind, "options", expected, error);
+  throw error;
 }
 
 /**
