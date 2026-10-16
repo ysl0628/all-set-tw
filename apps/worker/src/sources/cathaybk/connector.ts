@@ -1529,9 +1529,71 @@ async function dismissCathayNoticeModals(page: Page) {
       }),
     );
     if (!closed) {
+      await logCathayNoticeControls(page);
       throw new Error("國泰世華交易頁面的公告視窗無法關閉，未更新資料。");
     }
   }
+}
+
+/** 公告關不掉時記錄視窗內可操作的元素，供調整關閉方式；文字截斷且遮蔽長數字。 */
+async function logCathayNoticeControls(page: Page) {
+  const controls = await page
+    .evaluate(() => {
+      const dialog = document.querySelector<HTMLElement>(
+        "[data-cathay-notice-dialog]",
+      );
+      if (!dialog) return null;
+      const mask = (value: string) =>
+        value
+          .replace(/\s+/g, "")
+          .replace(/\d{6,}/g, (digits) => `***${digits.slice(-4)}`)
+          .slice(0, 20);
+      const describe = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          tag: element.tagName.toLowerCase(),
+          role: element.getAttribute("role"),
+          type: element.getAttribute("type"),
+          text: mask(element.textContent ?? ""),
+          ariaLabel: mask(element.getAttribute("aria-label") ?? ""),
+          className: element.className.toString().slice(0, 60),
+          disabled:
+            (element as HTMLButtonElement).disabled === true ||
+            element.getAttribute("aria-disabled") === "true",
+          visible: rect.width > 0 && rect.height > 0,
+        };
+      };
+      const clickable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          "button, a, input, label, [role='button'], [role='checkbox'], [onclick], [tabindex]",
+        ),
+      );
+      const pointer = Array.from(
+        dialog.querySelectorAll<HTMLElement>("div, span, svg, p"),
+      ).filter(
+        (element) =>
+          window.getComputedStyle(element).cursor === "pointer" &&
+          !clickable.some((item) => item.contains(element)),
+      );
+      const body = dialog.querySelector<HTMLElement>(
+        ".chakra-modal__body, [class*='body']",
+      );
+      return {
+        clickable: clickable.slice(0, 12).map(describe),
+        pointer: pointer.slice(0, 6).map(describe),
+        bodyScrollable: body ? body.scrollHeight > body.clientHeight : null,
+        footerFound:
+          dialog.querySelector(".chakra-modal__footer, footer") !== null,
+      };
+    })
+    .catch(() => null);
+  console.error(
+    JSON.stringify({
+      event: "cathaybk_notice_controls",
+      currentUrl: safeCathayDiagnosticUrl(page.url()),
+      controls,
+    }),
+  );
 }
 
 const CATHAY_COMBOBOX_OPTIONS_SELECTOR = "[role='option'], [id*='-option-']";
