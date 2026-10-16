@@ -1429,10 +1429,12 @@ async function dismissCathayNoticeWhenDetailLoads(page: Page) {
 }
 
 /**
- * 關閉國泰網銀的公告視窗（例如「系統維護公告」）。公告會搶走焦點並蓋住查詢表單。
+ * 關閉國泰網銀的公告視窗（例如「系統維護公告 (1/3)」）。公告會搶走焦點並蓋住查詢表單。
+ * 多則公告依序點「下一則」，最後一則點「我知道了」；不點「上一則」。
  * 只處理標題含公告／通知／維護的視窗，其他對話框不自動點選；關不掉時停止同步。
  */
 async function dismissCathayNoticeModals(page: Page) {
+  // 與登入公告相同，最多處理二十則，避免公告循環。
   for (let count = 0; ; count += 1) {
     const notice = await page.evaluate((pattern: string) => {
       const visible = (element: HTMLElement) => {
@@ -1479,7 +1481,7 @@ async function dismissCathayNoticeModals(page: Page) {
           .filter(Boolean)
           .join(" ")
           .replace(/\s+/g, "");
-      const button =
+      const closeButton =
         buttons.find((element) =>
           /^(我知道了|知道了|確定|確認|關閉|關閉視窗|OK)$/i.test(
             label(element),
@@ -1490,31 +1492,47 @@ async function dismissCathayNoticeModals(page: Page) {
             element.classList.contains("chakra-modal__close-btn") ||
             /關閉|close/i.test(element.getAttribute("aria-label") ?? ""),
         );
+      const nextButton = buttons.find((element) => label(element) === "下一則");
+      const button = closeButton ?? nextButton;
       if (button) button.dataset.cathayNoticeDismiss = "true";
       return {
         heading,
+        action: closeButton ? "close" : nextButton ? "next" : "escape",
         buttonText: button ? label(button).slice(0, 20) : null,
-      };
+      } as const;
     }, CATHAY_NOTICE_HEADING_PATTERN.source);
     if (!notice) return;
-    if (count >= 5) {
+    if (count >= 20) {
       throw new Error("國泰世華交易頁面的公告視窗過多，未更新資料。");
     }
 
-    if (notice.buttonText !== null) {
-      await page.click('[data-cathay-notice-dismiss="true"]');
-    } else {
+    if (notice.action === "escape") {
       await page.keyboard.press("Escape");
+    } else {
+      await page.click('[data-cathay-notice-dismiss="true"]');
     }
-    const closed = await page
+    // 「下一則」留在同一個視窗，等標題換成下一則；其他動作等視窗關閉。
+    const advanced = await page
       .waitForFunction(
-        () => {
+        (action: string, previousHeading: string) => {
           const dialog = document.querySelector<HTMLElement>(
             "[data-cathay-notice-dialog]",
           );
-          return !dialog || dialog.getBoundingClientRect().height === 0;
+          if (!dialog || dialog.getBoundingClientRect().height === 0)
+            return true;
+          if (action !== "next") return false;
+          const heading = (
+            dialog.querySelector<HTMLElement>(
+              "header, h1, h2, h3, h4, [class*='header'], [class*='title']",
+            )?.innerText ?? ""
+          )
+            .replace(/\s+/g, "")
+            .slice(0, 40);
+          return heading !== previousHeading;
         },
         { timeout: 5000 },
+        notice.action,
+        notice.heading,
       )
       .then(
         () => true,
@@ -1524,11 +1542,12 @@ async function dismissCathayNoticeModals(page: Page) {
       JSON.stringify({
         event: "cathaybk_notice_dismissed",
         heading: notice.heading,
+        action: notice.action,
         buttonText: notice.buttonText,
-        closed,
+        advanced,
       }),
     );
-    if (!closed) {
+    if (!advanced) {
       await logCathayNoticeControls(page);
       throw new Error("國泰世華交易頁面的公告視窗無法關閉，未更新資料。");
     }
