@@ -1522,8 +1522,76 @@ async function logCathayComboboxWaitFailed(
       errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
       currentUrl: safeCathayDiagnosticUrl(page.url()),
       state,
+      page: await collectCathayPageOverview(page),
     }),
   );
+}
+
+/**
+ * 頁面概況：是否載入完成、焦點所在、是否有彈出視窗擋住操作。只記錄彈窗標題與
+ * 系統訊息關鍵字；長串數字只保留末四碼，不記錄帳務內容。
+ */
+async function collectCathayPageOverview(page: Page) {
+  return page
+    .evaluate(() => {
+      const mask = (value: string) =>
+        value
+          .replace(/\s+/g, "")
+          .replace(/\d{6,}/g, (digits) => `***${digits.slice(-4)}`)
+          .slice(0, 40);
+      const visible = (element: HTMLElement) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const overlays = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          "[role='dialog'], [aria-modal='true'], .modal, [class*='modal'], [class*='popup'], [class*='Popup'], [class*='overlay']",
+        ),
+      ).filter(visible);
+      const bodyText = (document.body?.innerText ?? "").replace(/\s+/g, "");
+      const active = document.activeElement as HTMLElement | null;
+      return {
+        readyState: document.readyState,
+        title: mask(document.title),
+        bodyTextLength: bodyText.length,
+        buttonCount: document.querySelectorAll("button").length,
+        comboboxCount: document.querySelectorAll("input[role='combobox']")
+          .length,
+        iframeCount: document.querySelectorAll("iframe").length,
+        activeElement: active
+          ? `${active.tagName.toLowerCase()}${active.getAttribute("role") ? `[role=${active.getAttribute("role")}]` : ""}`
+          : null,
+        overlayCount: overlays.length,
+        overlays: overlays.slice(0, 3).map((element) => ({
+          tag: element.tagName.toLowerCase(),
+          className: element.className.toString().slice(0, 60),
+          heading: mask(
+            element.querySelector<HTMLElement>(
+              "h1, h2, h3, h4, [class*='title'], [class*='header']",
+            )?.innerText ?? "",
+          ),
+        })),
+        notices: [
+          "系統維護",
+          "系統忙碌",
+          "請稍後",
+          "逾時",
+          "重新登入",
+          "錯誤",
+          "公告",
+          "問卷",
+          "我知道了",
+          "不再顯示",
+        ].filter((keyword) => bodyText.includes(keyword)),
+      };
+    })
+    .catch(() => null);
 }
 
 function assertCathayNotLoggedOut(page: Pick<Page, "url">) {
@@ -1715,13 +1783,14 @@ async function scrapeDeposits(
           }
           await page
             .waitForSelector("input[role='combobox']", { timeout: 15000 })
-            .catch((error: unknown) => {
+            .catch(async (error: unknown) => {
               console.error(
                 JSON.stringify({
                   event: "cathaybk_deposit_detail_wait_failed",
                   errorType:
                     error instanceof Error ? error.name : "UNKNOWN_ERROR",
                   currentUrl: safeCathayDiagnosticUrl(page.url()),
+                  page: await collectCathayPageOverview(page),
                 }),
               );
               throw error;
